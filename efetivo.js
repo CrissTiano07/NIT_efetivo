@@ -15,13 +15,13 @@ const NIT_EFETIVO = (() => {
   // ═══════════════════════════════════════════════════════════════
   const CFG = {
     firebase: {
-      apiKey:            'AIzaSyCWAGfmCr-pHr0asIk_Sfz1WbajIEhiZn0',
+      apiKey:            'SUBSTITUIR_API_KEY',
       authDomain:        'nit-operacional.firebaseapp.com',
       databaseURL:       'https://nit-operacional-default-rtdb.firebaseio.com',
       projectId:         'nit-operacional',
       storageBucket:     'nit-operacional.appspot.com',
-      messagingSenderId: '823046484118',
-      appId:             '1:823046484118:web:487159cabb28ae275bd2b7'
+      messagingSenderId: 'SUBSTITUIR',
+      appId:             'SUBSTITUIR'
     },
     TURNOS: {
       manha: { label:'MANHÃ',  inicio:'05:30', fim:'11:30', minI:330,  minF:690  },
@@ -100,6 +100,7 @@ const NIT_EFETIVO = (() => {
 
       firebase.auth().onAuthStateChanged(async user => {
         if (user) {
+          // Usuário anônimo fora do modo campo → deslogar e mostrar login
           if (user.isAnonymous && S.modo !== 'campo') {
             await firebase.auth().signOut();
             UI.showLogin();
@@ -115,21 +116,20 @@ const NIT_EFETIVO = (() => {
             UI.showDashboard();
           }
         } else {
-  // Sem auth
-    if (S.modo === 'campo') {
-      firebase.auth().signInAnonymously()
-        .catch(e => UI.toast('Erro de conexão. Tente novamente.', 'danger'));
-      // onAuthStateChanged re-dispara com o usuário anônimo
-      // e cuida de DB.initPublico() + UI.showCampo() a partir daí
-    } else {
-      UI.showLogin();
-    }
-  }
+          // Sem auth
+          if (S.modo === 'campo') {
+            // signInAnonymously dispara onAuthStateChanged novamente
+            firebase.auth().signInAnonymously()
+              .catch(() => UI.toast('Erro de conexão. Tente novamente.', 'danger'));
+          } else {
+            UI.showLogin();
+          }
+        }
       });
     },
 
     async _resolveRole(user) {
-      if (!user.email) { S.role = 'campo'; return; }
+      if (!user.email) { S.role = 'campo'; return; } // anônimos = campo sempre
       try {
         const snap = await firebase.database()
           .ref(`efetivo_roles/${emailKey(user.email)}`).get();
@@ -296,6 +296,24 @@ const NIT_EFETIVO = (() => {
 
       Log.write('posto_criado', null, { postoId:ref.key, local:dados.local, numero });
       return ref.key;
+    },
+
+    async editarPosto(postoId, dados, alocacaoAnterior) {
+      // Libera o recurso anterior se mudou
+      if (alocacaoAnterior?.tipo === 'agente' &&
+          alocacaoAnterior.id !== dados.alocacao?.id) {
+        await DB.setStatusRecurso(alocacaoAnterior.id, 'disponivel');
+      }
+      // Escala o novo recurso
+      if (dados.alocacao?.tipo === 'agente' && dados.alocacao?.id)
+        await DB.setStatusRecurso(dados.alocacao.id, 'escalado');
+      if (dados.alocacao?.tipo === 'viatura' && dados.alocacao?.id)
+        await S.db.ref(`efetivo/viaturas/${dados.alocacao.id}/status`).set('escalada');
+
+      await S.db.ref(`efetivo/postos/${postoId}`).update({
+        ...dados, updatedAt: Date.now(), updatedBy: S.user?.email
+      });
+      Log.write('posto_editado', null, { postoId, local: dados.local });
     },
 
     async setStatusRecurso(id, status) {
@@ -607,7 +625,7 @@ const NIT_EFETIVO = (() => {
         .filter(([,p]) => p.operacaoId === opId)
         .sort(([,a],[,b]) => (a.numero||0) - (b.numero||0));
 
-      const linhas = postosOp.map(([,posto]) => {
+      const linhas = postosOp.map(([postoId, posto]) => {
         const nome  = esc(posto.alocacao?.nome || '—');
         const vazio = !posto.alocacao?.id;
         return `<div class="posto-linha ${vazio?'posto-vazio':'posto-alocado'}">
@@ -616,6 +634,7 @@ const NIT_EFETIVO = (() => {
           <span class="posto-alocado-nome">${nome}</span>
           <span class="badge-acao">${esc(posto.tipoAcao||'')}</span>
           ${posto.obs ? `<span class="posto-obs">${esc(posto.obs)}</span>` : ''}
+          ${writeable ? `<button class="btn-icon" title="Editar QRU" onclick="NIT_EFETIVO.Modals.abrirEditPosto('${postoId}')">✏️</button>` : ''}
         </div>`;
       }).join('');
 
@@ -880,6 +899,8 @@ const NIT_EFETIVO = (() => {
     },
     _onOverlayClick(e, id) { if (e.target.id === id) Modals._close(id); },
 
+    _editPostoId: null, // null = modo criação; string = modo edição
+
     // ── ABRIR TURNO ──────────────────────────────────────────
     abrirCriarEscala() {
       const di = $('nova-escala-data');
@@ -968,7 +989,59 @@ const NIT_EFETIVO = (() => {
       }
       Modals._open('modal-add-posto');
     },
-    fecharAddPosto() { Modals._close('modal-add-posto'); },
+    fecharAddPosto() {
+      // Resetar para modo criação ao fechar
+      Modals._editPostoId = null;
+      const h3  = document.querySelector('#modal-add-posto .modal-header h3');
+      const btn = document.querySelector('#modal-add-posto .btn-primary');
+      if (h3)  h3.textContent  = 'ADICIONAR QRU / POSTO';
+      if (btn) btn.textContent = 'ADICIONAR QRU';
+      Modals._close('modal-add-posto');
+    },
+
+    abrirEditPosto(postoId) {
+      const posto = S.postos[postoId];
+      if (!posto) return;
+      Modals._editPostoId = postoId;
+
+      // Pré-preencher campos com dados existentes
+      $('posto-operacao-id').value   = posto.operacaoId || '';
+      $('posto-local').value         = posto.local      || '';
+      $('posto-bairro').value        = posto.bairro     || '';
+      $('posto-horario').value       = posto.horario    || '';
+      $('posto-obs').value           = posto.obs        || '';
+      $('posto-qru-pessoas').value   = posto.qruPessoas || 1;
+
+      const ts = $('posto-tipo-acao');
+      if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t =>
+        `<option${t === posto.tipoAcao ? ' selected' : ''}>${t}</option>`).join('');
+
+      const rs = $('posto-recurso-select');
+      if (rs) {
+        const agentes = Object.entries(S.recursos)
+          .filter(([,r]) => r.status !== 'desligado')
+          .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'));
+        const vts = Object.entries(S.viaturas);
+        rs.innerHTML =
+          `<option value="">— Selecionar —</option>` +
+          agentes.map(([id,r]) =>
+            `<option value="a:${id}"${posto.alocacao?.id===id?' selected':''}>${esc(r.nome)} · ${r.cargo||''}</option>`
+          ).join('') +
+          (vts.length ? `<optgroup label="── VIATURAS ──">` +
+            vts.map(([id,v]) =>
+              `<option value="v:${id}"${posto.alocacao?.id===id?' selected':''}>${esc(v.nome||id)}</option>`
+            ).join('') + `</optgroup>` : '');
+      }
+
+      // Ajustar título e botão
+      const h3  = document.querySelector('#modal-add-posto .modal-header h3');
+      const btn = document.querySelector('#modal-add-posto .btn-primary');
+      if (h3)  h3.textContent  = `EDITAR QRU Nº ${posto.numero}`;
+      if (btn) btn.textContent = 'SALVAR ALTERAÇÕES';
+
+      Modals._open('modal-add-posto');
+    },
+
     async confirmarAddPosto() {
       const opId    = $('posto-operacao-id')?.value;
       const local   = $('posto-local')?.value.trim();
@@ -992,14 +1065,24 @@ const NIT_EFETIVO = (() => {
       }
 
       const op = S.operacoes[opId] || {};
-      await DB.adicionarPosto({
-        escalaId: S.escalaAtiva, operacaoId: opId,
+      const dadosPosto = {
         local: upper(local), bairro: upper(bairro)||op.bairro||'',
         horario: horario||op.horario||'',
         tipoAcao: tipo, alocacao, obs: upper(obs), qruPessoas: qruP
-      });
-      Modals.fecharAddPosto();
-      UI.toast('QRU adicionado!', 'success');
+      };
+
+      if (Modals._editPostoId) {
+        // ── MODO EDIÇÃO ──────────────────────────────────────
+        const alocacaoAnterior = S.postos[Modals._editPostoId]?.alocacao;
+        await DB.editarPosto(Modals._editPostoId, dadosPosto, alocacaoAnterior);
+        Modals.fecharAddPosto();
+        UI.toast('QRU atualizado!', 'success');
+      } else {
+        // ── MODO CRIAÇÃO ─────────────────────────────────────
+        await DB.adicionarPosto({ escalaId: S.escalaAtiva, operacaoId: opId, ...dadosPosto });
+        Modals.fecharAddPosto();
+        UI.toast('QRU adicionado!', 'success');
+      }
     },
 
     // ── SUPERVISÃO ───────────────────────────────────────────
