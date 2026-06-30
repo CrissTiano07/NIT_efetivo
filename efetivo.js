@@ -108,7 +108,22 @@ const NIT_EFETIVO = (() => {
   const esc       = s   => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   const upper     = s   => (s||'').toUpperCase();
   const emailKey  = em  => em.replace(/\./g,'_').replace(/@/g,'_at_');
+  // Hierarquia de permissão — 3 níveis, conforme matriz original do projeto:
+  //   canWrite  → ações operacionais do dia a dia (Monitor já pode):
+  //               abrir turno, +operação, +QRU, +supervisão, mudar status
+  //               básico, escalar equipe pro turno, aplicar template
+  //   canManage → estrutura/cadastro (exige Supervisor+):
+  //               cadastrar/editar/excluir recurso e equipe, encerrar
+  //               turno, editar/excluir escala e operação, marcar
+  //               afastado/desligado, gerar relatório mensal
+  //   canAdmin  → configuração (exige Admin):
+  //               criar/editar/excluir templates
+  // IMPORTANTE: isto é UX — esconde/mostra controles. A barreira real
+  // de segurança são as Firebase Rules (auth.token.email != null),
+  // que hoje NÃO diferenciam role. Ver nota no CONTEXT_EFETIVO_HANDOFF.
   const canWrite  = ()  => ['monitor','supervisor','admin'].includes(S.role);
+  const canManage = ()  => ['supervisor','admin'].includes(S.role);
+  const canAdmin  = ()  => S.role === 'admin';
 
   function getDataHoje() {
     // BRT = UTC-3
@@ -353,6 +368,7 @@ const NIT_EFETIVO = (() => {
       const fn  = ref.on('value', snap => {
         S.viaturas = snap.val() || {};
         UI.renderEscala();
+        UI.renderEquipes(); // sem isso, a própria aba Equipes não atualizava sozinha após CRUD
       });
       S._unsubs.push(() => ref.off('value', fn));
     },
@@ -425,12 +441,55 @@ const NIT_EFETIVO = (() => {
       return ref.key;
     },
 
+    async editarEscala(escalaId, dados) {
+      await S.db.ref(`efetivo/escalas/${escalaId}`).update({
+        ...dados, updatedAt: Date.now(), updatedBy: S.user?.email
+      });
+      Log.write('escala_editada', null, { escalaId, ...dados });
+    },
+
+    async excluirEscala(escalaId) {
+      // Libera todos os recursos/viaturas escalados nos postos desta
+      // escala antes de remover — mesma lógica de encerrarEscala, mas
+      // para o caso de uma escala criada por engano (nunca chegou a rodar).
+      const postosEscala = Object.entries(S.postos).filter(([,p]) => p.escalaId === escalaId);
+      for (const [postoId, posto] of postosEscala) {
+        await DB._statusAlocacao(posto.alocacao, 'disponivel');
+        await S.db.ref(`efetivo/postos/${postoId}`).remove();
+      }
+      const opsEscala = Object.entries(S.operacoes).filter(([,o]) => o.escalaId === escalaId);
+      for (const [opId] of opsEscala) {
+        await S.db.ref(`efetivo/operacoes/${opId}`).remove();
+      }
+      await S.db.ref(`efetivo/escalas/${escalaId}`).remove();
+      Log.write('escala_excluida', null, { escalaId });
+    },
+
     async adicionarOperacao(escalaId, dados) {
       const ordemAtual = Object.values(S.operacoes).filter(o => o.escalaId === escalaId).length;
       const ref = await S.db.ref('efetivo/operacoes').push({
         ...dados, escalaId, ordem: ordemAtual + 1, criadoEm: Date.now()
       });
       return ref.key;
+    },
+
+    async editarOperacao(opId, dados) {
+      await S.db.ref(`efetivo/operacoes/${opId}`).update({
+        ...dados, updatedAt: Date.now(), updatedBy: S.user?.email
+      });
+      Log.write('operacao_editada', null, { opId, ...dados });
+    },
+
+    async excluirOperacao(opId) {
+      // Libera recursos/viaturas e remove todos os postos da operação
+      // antes de excluir a operação em si — evita deixar QRU órfão.
+      const postosOp = Object.entries(S.postos).filter(([,p]) => p.operacaoId === opId);
+      for (const [postoId, posto] of postosOp) {
+        await DB._statusAlocacao(posto.alocacao, 'disponivel');
+        await S.db.ref(`efetivo/postos/${postoId}`).remove();
+      }
+      await S.db.ref(`efetivo/operacoes/${opId}`).remove();
+      Log.write('operacao_excluida', null, { opId });
     },
 
     // ── Alocação de posto — agente OU viatura, lógica única ──────
@@ -568,6 +627,34 @@ const NIT_EFETIVO = (() => {
       });
       Log.write('recurso_cadastrado', ref.key, { nome:dados.nome, matricula:dados.matricula });
       return ref.key;
+    },
+
+    async editarRecurso(id, dados) {
+      await S.db.ref(`efetivo/recursos/${id}`).update({
+        ...dados, updatedAt: Date.now(), updatedBy: S.user?.email
+      });
+      Log.write('recurso_editado', id, { nome: dados.nome });
+    },
+
+    async excluirRecurso(id) {
+      // Não remove se o recurso estiver alocado em algum posto ativo —
+      // melhor travar e avisar do que deixar um QRU apontando pra um
+      // recurso que não existe mais.
+      const emUso = Object.values(S.postos).some(p => p.alocacao?.id === id);
+      if (emUso) throw new Error('RECURSO_EM_USO');
+      const r = S.recursos[id];
+      await S.db.ref(`efetivo/recursos/${id}`).remove();
+      Log.write('recurso_excluido', id, { nome: r?.nome, matricula: r?.matricula });
+    },
+
+    async editarSupervisao(escalaId, camada, recursoId, dados) {
+      await S.db.ref(`efetivo/escalas/${escalaId}/supervisao/${camada}/${recursoId}`).set(dados);
+      Log.write('supervisao_editada', recursoId, { escalaId, camada, ...dados });
+    },
+
+    async removerSupervisao(escalaId, camada, recursoId) {
+      await S.db.ref(`efetivo/escalas/${escalaId}/supervisao/${camada}/${recursoId}`).remove();
+      Log.write('supervisao_removida', recursoId, { escalaId, camada });
     },
 
     // ── RELATÓRIO MENSAL — sem backend, lê o Firebase direto ────
@@ -826,11 +913,30 @@ const NIT_EFETIVO = (() => {
       const postosEscala = Object.entries(S.postos)
         .filter(([,p]) => p.escalaId === S.escalaAtiva)
         .sort(([,a],[,b]) => (a.numero||0) - (b.numero||0));
-      const ops = Object.entries(S.operacoes)
+
+      // Preservar foco/cursor da busca entre re-renders (mesmo padrão
+      // já usado em Recursos/Equipes/Templates)
+      const buscaAnterior = $('busca-escala');
+      const tinhaFoco  = document.activeElement === buscaAnterior;
+      const cursorPos  = tinhaFoco ? buscaAnterior.selectionStart : null;
+      const buscaValor = buscaAnterior ? buscaAnterior.value : '';
+      const busca      = buscaValor.toLowerCase().trim();
+
+      let ops = Object.entries(S.operacoes)
         .filter(([,o]) => o.escalaId === S.escalaAtiva)
         .sort(([,a],[,b]) => (a.ordem||0) - (b.ordem||0));
 
-      // QRUs por viatura
+      if (busca) {
+        ops = ops.filter(([opId, op]) => {
+          const bateOp = (op.nome||'').toLowerCase().includes(busca) ||
+                         (op.bairro||'').toLowerCase().includes(busca);
+          const batePosto = postosEscala.some(([,p]) =>
+            p.operacaoId === opId && (p.local||'').toLowerCase().includes(busca));
+          return bateOp || batePosto;
+        });
+      }
+
+      // QRUs por viatura (sempre sobre o total, não sobre o filtro)
       const qruVt = {};
       postosEscala.forEach(([,p]) => {
         if (p.alocacao?.tipo === 'viatura')
@@ -838,7 +944,10 @@ const NIT_EFETIVO = (() => {
       });
 
       const w = canWrite();
+      const m = canManage();
       const foraPadrao = escalaForaDoPadrao(escala);
+      const totalOps = Object.values(S.operacoes).filter(o => o.escalaId === S.escalaAtiva).length;
+
       cont.innerHTML = `
         <div class="escala-header">
           <div class="escala-title">
@@ -848,23 +957,39 @@ const NIT_EFETIVO = (() => {
               ${foraPadrao ? '⚠ ' : ''}${esc(escala.horarioInicio)}–${esc(escala.horarioFim)}
             </span>
             ${foraPadrao ? `<span class="badge badge-warning" title="Horário diferente do padrão deste tipo de turno">FORA DO PADRÃO</span>` : ''}
+            ${m ? `
+              <button class="btn-icon" title="Editar turno" onclick="NIT_EFETIVO.Modals.abrirEditEscala()">✏️</button>
+              <button class="btn-icon" title="Excluir turno" onclick="NIT_EFETIVO.Actions.excluirEscala('${S.escalaAtiva}')">🗑️</button>
+            ` : ''}
           </div>
           <div class="escala-actions">
             ${w ? `
               <button class="btn btn-secondary btn-sm" onclick="NIT_EFETIVO.Modals.abrirAddSupervisao()">+ SUPERVISÃO</button>
               <button class="btn btn-secondary btn-sm" onclick="NIT_EFETIVO.Modals.abrirAddOperacao()">+ OPERAÇÃO</button>
-              ${escala.status==='ativo'
-                ? `<button class="btn btn-danger btn-sm" onclick="NIT_EFETIVO.Actions.encerrarEscala()">ENCERRAR TURNO</button>` : ''}
             ` : ''}
+            ${m && escala.status==='ativo'
+              ? `<button class="btn btn-danger btn-sm" onclick="NIT_EFETIVO.Actions.encerrarEscala()">ENCERRAR TURNO</button>` : ''}
           </div>
         </div>
+        ${totalOps > 1 ? `
+          <input id="busca-escala" class="input-search" style="width:100%;margin-bottom:16px"
+            placeholder="Buscar operação, bairro ou endereço de QRU..."
+            value="${esc(buscaValor)}" oninput="NIT_EFETIVO.UI.renderEscala()">
+        ` : ''}
         ${UI._supervisaoHTML(escala)}
         ${UI._viaturasHTML(escala, qruVt)}
-        ${ops.map(([opId,op]) => UI._operacaoHTML(opId, op, postosEscala, w, escala)).join('')}
+        ${ops.length
+          ? ops.map(([opId,op]) => UI._operacaoHTML(opId, op, postosEscala, w, escala, m)).join('')
+          : (busca ? `<p class="text-muted" style="text-align:center;padding:24px">Nenhuma operação ou QRU encontrado para "${esc(buscaValor)}"</p>` : '')}
         ${w ? `<div class="add-operacao-hint" onclick="NIT_EFETIVO.Modals.abrirAddOperacao()">
           + Adicionar operação / evento ao turno
         </div>` : ''}
       `;
+
+      if (tinhaFoco) {
+        const buscaNovo = $('busca-escala');
+        if (buscaNovo) { buscaNovo.focus(); buscaNovo.setSelectionRange(cursorPos, cursorPos); }
+      }
     },
 
     _semEscalaHTML() {
@@ -883,6 +1008,7 @@ const NIT_EFETIVO = (() => {
 
     _supervisaoHTML(escala) {
       const sup = escala.supervisao || {};
+      const w   = canWrite();
       const camadas = [
         { key:'supervisores',  label:'SUPERVISOR'  },
         { key:'auxiliares',    label:'AUXILIAR'     },
@@ -897,6 +1023,10 @@ const NIT_EFETIVO = (() => {
             <span class="sup-nome">${esc(r.nome||id)}</span>
             <span class="sup-funcao">${esc(info.funcao||'')}</span>
             <span class="sup-contato">${esc(info.contato||r.telefone||'')}</span>
+            ${w ? `
+              <button class="btn-icon" title="Editar" onclick="NIT_EFETIVO.Modals.abrirEditSupervisao('${key}','${id}')">✏️</button>
+              <button class="btn-icon" title="Remover" onclick="NIT_EFETIVO.Actions.removerSupervisao('${S.escalaAtiva}','${key}','${id}')">🗑️</button>
+            ` : ''}
           </div>`;
         })
       ).join('');
@@ -934,7 +1064,7 @@ const NIT_EFETIVO = (() => {
       </div>`;
     },
 
-    _operacaoHTML(opId, op, postosEscala, writeable, escala) {
+    _operacaoHTML(opId, op, postosEscala, writeable, escala, manageable) {
       const postosOp = postosEscala
         .filter(([,p]) => p.operacaoId === opId)
         .sort(([,a],[,b]) => (a.numero||0) - (b.numero||0));
@@ -971,6 +1101,10 @@ const NIT_EFETIVO = (() => {
           <span class="op-count">${postosOp.length} QRU${postosOp.length!==1?'s':''}</span>
           ${writeable
             ? `<button class="btn btn-secondary btn-sm" onclick="NIT_EFETIVO.Modals.abrirAddPosto('${opId}')">+ QRU</button>` : ''}
+          ${manageable ? `
+            <button class="btn-icon" title="Editar operação" onclick="NIT_EFETIVO.Modals.abrirEditOperacao('${opId}')">✏️</button>
+            <button class="btn-icon" title="Excluir operação" onclick="NIT_EFETIVO.Actions.excluirOperacao('${opId}')">🗑️</button>
+          ` : ''}
         </div>
         ${horarioAlerta ? `<div class="op-alerta-banner">⚠ Esta operação começa fora do horário oficial do turno (${esc(escala?.horarioInicio)}–${esc(escala?.horarioFim)})</div>` : ''}
         <div class="postos-lista">
@@ -1015,6 +1149,10 @@ const NIT_EFETIVO = (() => {
       const escalado   = contarPorStatus('escalado');
       const ausente    = contarPorStatus('ausente');
       const w          = canWrite();
+      const m          = canManage();
+      // Monitor só muda status operacional do dia a dia; afastado/desligado
+      // é decisão administrativa, exige Supervisor+
+      const statusPermitidos = m ? CFG.STATUS_RECURSO : CFG.STATUS_RECURSO.filter(s => s !== 'afastado' && s !== 'desligado');
 
       const linhas = lista.map(([id,r]) => `
         <tr class="recurso-row status-${r.status}">
@@ -1024,11 +1162,16 @@ const NIT_EFETIVO = (() => {
           <td>${esc(CFG.TURNOS[r.turno_padrao]?.label||r.turno_padrao||'—')}</td>
           <td><span class="badge badge-${CFG.STATUS_COLORS[r.status]||'muted'}">${upper(r.status||'')}</span></td>
           <td><span class="font-mono">${esc(r.telefone||'—')}</span></td>
-          <td>${w ? `
-            <select class="select-status-inline" onchange="NIT_EFETIVO.Actions.mudarStatus('${id}',this.value)">
-              ${CFG.STATUS_RECURSO.map(s =>
-                `<option value="${s}"${r.status===s?' selected':''}>${upper(s)}</option>`).join('')}
-            </select>` : ''}
+          <td class="acoes-cell">
+            ${w ? `
+              <select class="select-status-inline" onchange="NIT_EFETIVO.Actions.mudarStatus('${id}',this.value)">
+                ${statusPermitidos.map(s =>
+                  `<option value="${s}"${r.status===s?' selected':''}>${upper(s)}</option>`).join('')}
+              </select>` : ''}
+            ${m ? `
+              <button class="btn-icon" title="Editar recurso" onclick="NIT_EFETIVO.Modals.abrirEditRecurso('${id}')">✏️</button>
+              <button class="btn-icon" title="Excluir recurso" onclick="NIT_EFETIVO.Actions.excluirRecurso('${id}')">🗑️</button>
+            ` : ''}
           </td>
         </tr>`).join('');
 
@@ -1050,7 +1193,7 @@ const NIT_EFETIVO = (() => {
               ${CFG.STATUS_RECURSO.map(s =>
                 `<option value="${s}"${filtroSt===s?' selected':''}>${upper(s)}</option>`).join('')}
             </select>
-            ${w ? `<button class="btn btn-primary btn-sm" onclick="NIT_EFETIVO.Modals.abrirCadastroRecurso()">+ RECURSO</button>` : ''}
+            ${m ? `<button class="btn btn-primary btn-sm" onclick="NIT_EFETIVO.Modals.abrirCadastroRecurso()">+ RECURSO</button>` : ''}
           </div>
         </div>
         <div class="table-wrapper">
@@ -1078,10 +1221,19 @@ const NIT_EFETIVO = (() => {
       const cont = $('equipes-container');
       if (!cont) return;
 
-      const lista = sortByNome(Object.entries(S.viaturas));
+      const buscaAnterior = $('busca-equipe');
+      const tinhaFoco  = document.activeElement === buscaAnterior;
+      const cursorPos  = tinhaFoco ? buscaAnterior.selectionStart : null;
+      const buscaValor = buscaAnterior ? buscaAnterior.value : '';
+      const busca      = buscaValor.toLowerCase().trim();
+
+      let lista = sortByNome(Object.entries(S.viaturas));
+      if (busca) lista = lista.filter(([,v]) => (v.nome||'').toLowerCase().includes(busca));
+
       const escaladasHoje = S.escalaAtiva
         ? (S.escalas[S.escalaAtiva]?.viaturasEscaladas || {}) : {};
       const w = canWrite();
+      const m = canManage();
 
       const cards = lista.map(([id, v]) => {
         const lider   = S.recursos[v.liderId] || {};
@@ -1095,16 +1247,17 @@ const NIT_EFETIVO = (() => {
               <span class="equipe-nome">${esc(v.nome||'—')}</span>
               <span class="badge badge-${v.status==='escalada'?'accent':'success'}">${upper(v.status||'disponivel')}</span>
             </div>
-            ${w ? `
-              <div class="equipe-acoes">
-                ${S.escalaAtiva ? `
-                  <button class="btn btn-sm ${noTurno?'btn-secondary':'btn-primary'}"
-                    onclick="NIT_EFETIVO.Actions.toggleViaturaEscala('${id}')">
-                    ${noTurno ? '✓ NO TURNO' : '+ ESCALAR HOJE'}
-                  </button>` : ''}
+            <div class="equipe-acoes">
+              ${w && S.escalaAtiva ? `
+                <button class="btn btn-sm ${noTurno?'btn-secondary':'btn-primary'}"
+                  onclick="NIT_EFETIVO.Actions.toggleViaturaEscala('${id}')">
+                  ${noTurno ? '✓ NO TURNO' : '+ ESCALAR HOJE'}
+                </button>` : ''}
+              ${m ? `
                 <button class="btn-icon" title="Editar equipe" onclick="NIT_EFETIVO.Modals.abrirEditViatura('${id}')">✏️</button>
                 <button class="btn-icon" title="Excluir equipe" onclick="NIT_EFETIVO.Actions.excluirViatura('${id}')">🗑️</button>
-              </div>` : ''}
+              ` : ''}
+            </div>
           </div>
           <div class="equipe-detalhes">
             <span class="equipe-lider">Líder: <strong>${esc(lider.nome||'—')}</strong></span>
@@ -1121,16 +1274,25 @@ const NIT_EFETIVO = (() => {
               ? `<span class="badge badge-accent">${Object.keys(escaladasHoje).length} no turno hoje</span>`
               : `<span class="badge badge-muted">Sem turno ativo</span>`}
           </div>
-          ${w ? `<button class="btn btn-primary btn-sm" onclick="NIT_EFETIVO.Modals.abrirCadastroViatura()">+ EQUIPE</button>` : ''}
+          <div class="recursos-filtros">
+            <input id="busca-equipe" class="input-search" placeholder="Buscar equipe..."
+              value="${esc(buscaValor)}" oninput="NIT_EFETIVO.UI.renderEquipes()">
+            ${m ? `<button class="btn btn-primary btn-sm" onclick="NIT_EFETIVO.Modals.abrirCadastroViatura()">+ EQUIPE</button>` : ''}
+          </div>
         </div>
         ${lista.length ? cards : `
           <div class="sem-escala">
             <div class="sem-escala-icon">🚓</div>
-            <h3>Nenhuma equipe cadastrada</h3>
+            <h3>Nenhuma equipe ${busca ? 'encontrada' : 'cadastrada'}</h3>
             <p>Cadastre equipes fixas (líder + tripulantes) uma vez e reutilize em todos os turnos — só escalando ou removendo do roster do dia.</p>
-            ${w ? `<button class="btn btn-primary" onclick="NIT_EFETIVO.Modals.abrirCadastroViatura()">CADASTRAR PRIMEIRA EQUIPE</button>` : ''}
+            ${m && !busca ? `<button class="btn btn-primary" onclick="NIT_EFETIVO.Modals.abrirCadastroViatura()">CADASTRAR PRIMEIRA EQUIPE</button>` : ''}
           </div>`}
       `;
+
+      if (tinhaFoco) {
+        const buscaNovo = $('busca-equipe');
+        if (buscaNovo) { buscaNovo.focus(); buscaNovo.setSelectionRange(cursorPos, cursorPos); }
+      }
     },
 
     // ── MÉTRICAS ──────────────────────────────────────────────
@@ -1193,12 +1355,41 @@ const NIT_EFETIVO = (() => {
         </div>`;
     },
 
+    // ── RELATÓRIO MENSAL — controle de visibilidade por role ──
+    // Gerar relatório é decisão gerencial (Supervisor+); o botão é
+    // HTML estático, então a visibilidade é controlada aqui ao
+    // entrar na aba, em vez de via template gerado.
+    renderRelatorioTab() {
+      const btn = $('btn-gerar-relatorio');
+      if (!btn) return;
+      if (canManage()) {
+        btn.classList.remove('hidden');
+      } else {
+        btn.classList.add('hidden');
+        if (!$('relatorio-sem-permissao')) {
+          btn.insertAdjacentHTML('afterend',
+            `<p id="relatorio-sem-permissao" class="text-muted">Gerar relatório mensal exige perfil Supervisor ou Admin.</p>`);
+        }
+      }
+    },
+
     // ── TEMPLATES ─────────────────────────────────────────────
     renderTemplates() {
       const cont = $('templates-container');
       if (!cont) return;
 
-      const lista = sortByNome(Object.entries(S.templates));
+      const buscaAnterior = $('busca-template');
+      const tinhaFoco  = document.activeElement === buscaAnterior;
+      const cursorPos  = tinhaFoco ? buscaAnterior.selectionStart : null;
+      const buscaValor = buscaAnterior ? buscaAnterior.value : '';
+      const busca      = buscaValor.toLowerCase().trim();
+
+      let lista = sortByNome(Object.entries(S.templates));
+      if (busca) lista = lista.filter(([,t]) =>
+        (t.nome||'').toLowerCase().includes(busca) ||
+        (t.tipoMissao||'').toLowerCase().includes(busca));
+
+      const a = canAdmin(); // templates são configuração — exclusivo do Admin
 
       const cards = lista.map(([id, t]) => {
         const nPostos = (t.postosPadrao||[]).length;
@@ -1218,10 +1409,12 @@ const NIT_EFETIVO = (() => {
                      ▶ APLICAR NO TURNO
                    </button>`
                 : '<span class="text-muted" style="font-size:.75rem">Abra um turno para aplicar</span>'}
-              <button class="btn-icon" title="Editar template"
-                onclick="NIT_EFETIVO.Modals.abrirEditTemplate('${id}')">✏️</button>
-              <button class="btn-icon" title="Excluir template"
-                onclick="NIT_EFETIVO.Actions.excluirTemplate('${id}')">🗑️</button>
+              ${a ? `
+                <button class="btn-icon" title="Editar template"
+                  onclick="NIT_EFETIVO.Modals.abrirEditTemplate('${id}')">✏️</button>
+                <button class="btn-icon" title="Excluir template"
+                  onclick="NIT_EFETIVO.Actions.excluirTemplate('${id}')">🗑️</button>
+              ` : ''}
             </div>
           </div>
           <div class="template-postos">
@@ -1239,20 +1432,30 @@ const NIT_EFETIVO = (() => {
         <div class="recursos-toolbar">
           <div class="recursos-badges">
             <span class="badge badge-muted">${lista.length} template${lista.length!==1?'s':''}</span>
+            ${!a ? `<span class="badge badge-muted" title="Criar/editar templates exige Admin">Somente Admin edita</span>` : ''}
           </div>
-          <button class="btn btn-primary btn-sm"
-            onclick="NIT_EFETIVO.Modals.abrirCriarTemplate()">+ NOVO TEMPLATE</button>
+          <div class="recursos-filtros">
+            <input id="busca-template" class="input-search" placeholder="Buscar template..."
+              value="${esc(buscaValor)}" oninput="NIT_EFETIVO.UI.renderTemplates()">
+            ${a ? `<button class="btn btn-primary btn-sm"
+              onclick="NIT_EFETIVO.Modals.abrirCriarTemplate()">+ NOVO TEMPLATE</button>` : ''}
+          </div>
         </div>
         ${lista.length
           ? cards
           : `<div class="sem-escala">
                <div class="sem-escala-icon">📐</div>
-               <h3>Nenhum template criado</h3>
+               <h3>Nenhum template ${busca ? 'encontrado' : 'criado'}</h3>
                <p>Crie templates para operações recorrentes como a Ciclofaixa e aplicar com um clique na abertura do turno.</p>
-               <button class="btn btn-primary"
-                 onclick="NIT_EFETIVO.Modals.abrirCriarTemplate()">CRIAR PRIMEIRO TEMPLATE</button>
+               ${a && !busca ? `<button class="btn btn-primary"
+                 onclick="NIT_EFETIVO.Modals.abrirCriarTemplate()">CRIAR PRIMEIRO TEMPLATE</button>` : ''}
              </div>`}
       `;
+
+      if (tinhaFoco) {
+        const buscaNovo = $('busca-template');
+        if (buscaNovo) { buscaNovo.focus(); buscaNovo.setSelectionRange(cursorPos, cursorPos); }
+      }
     },
     renderResultadoCampo(dados, alvoId = 'campo-resultado') {
       const cont = $(alvoId);
@@ -1486,7 +1689,10 @@ const NIT_EFETIVO = (() => {
     _editPostoId: null, // null = modo criação; string = modo edição
 
     // ── ABRIR TURNO ──────────────────────────────────────────
+    _editEscalaMode: false,
+
     abrirCriarEscala() {
+      Modals._editEscalaMode = false;
       const di = $('nova-escala-data');
       if (di) di.value = getDataHoje();
       // Auto-selecionar turno mais próximo
@@ -1496,9 +1702,34 @@ const NIT_EFETIVO = (() => {
         if (sel) sel.value = ativos[0];
       }
       Modals.onTurnoChange();
+      const h3  = document.querySelector('#modal-criar-escala .modal-header h3');
+      const btn = document.querySelector('#modal-criar-escala .btn-primary');
+      if (h3)  h3.textContent  = 'ABRIR TURNO';
+      if (btn) btn.textContent = 'ABRIR TURNO';
       Modals._open('modal-criar-escala');
     },
-    fecharCriarEscala() { Modals._close('modal-criar-escala'); },
+
+    abrirEditEscala() {
+      if (!S.escalaAtiva) return;
+      const escala = S.escalas[S.escalaAtiva];
+      if (!escala) return;
+      Modals._editEscalaMode = true;
+      const set = (id, val) => { const el = $(id); if (el) el.value = val || ''; };
+      set('nova-escala-data', escala.data);
+      set('nova-escala-turno', escala.turno);
+      set('nova-escala-inicio', escala.horarioInicio);
+      set('nova-escala-fim', escala.horarioFim);
+      const h3  = document.querySelector('#modal-criar-escala .modal-header h3');
+      const btn = document.querySelector('#modal-criar-escala .btn-primary');
+      if (h3)  h3.textContent  = 'EDITAR TURNO';
+      if (btn) btn.textContent = 'SALVAR ALTERAÇÕES';
+      Modals._open('modal-criar-escala');
+    },
+
+    fecharCriarEscala() {
+      Modals._editEscalaMode = false;
+      Modals._close('modal-criar-escala');
+    },
     onTurnoChange() {
       const tv  = $('nova-escala-turno')?.value;
       const cfg = CFG.TURNOS[tv];
@@ -1519,14 +1750,24 @@ const NIT_EFETIVO = (() => {
       // (cabeçalho da escala, badge do Modo Campo, rodapé do Modo Campo) —
       // embuti-lo aqui também causava duplicação visual ("MANHÃ 05:30–11:30 · ... 05:30–11:30").
       const label = cfg.label || upper(turno);
-      await DB.criarEscala({ turno, data, horarioInicio:ini, horarioFim:fim, label });
+      const dados = { turno, data, horarioInicio:ini, horarioFim:fim, label };
+
+      if (Modals._editEscalaMode && S.escalaAtiva) {
+        await DB.editarEscala(S.escalaAtiva, dados);
+        UI.toast('Turno atualizado!', 'success');
+      } else {
+        await DB.criarEscala(dados);
+        UI.toast('Turno aberto!', 'success');
+      }
       Modals.fecharCriarEscala();
-      UI.toast('Turno aberto!', 'success');
     },
 
     // ── NOVA OPERAÇÃO ────────────────────────────────────────
+    _editOperacaoId: null, // null = criação; string = edição
+
     abrirAddOperacao() {
       if (!S.escalaAtiva) { UI.toast('Abra um turno primeiro','warning'); return; }
+      Modals._editOperacaoId = null;
       // Mostrar ou ocultar selector de templates
       const tmplSection = $('op-template-section');
       const tmplSel     = $('op-template-select');
@@ -1547,10 +1788,59 @@ const NIT_EFETIVO = (() => {
       const tipoSel = $('op-tipo-missao');
       if (tipoSel) tipoSel.innerHTML = `<option value="">— Selecionar —</option>` +
         CFG.TIPOS_MISSAO.map(t => `<option>${t}</option>`).join('');
+      const h3  = document.querySelector('#modal-add-operacao .modal-header h3');
+      const btn = document.querySelector('#modal-add-operacao .btn-primary');
+      if (h3)  h3.textContent  = 'NOVA OPERAÇÃO';
+      if (btn) btn.textContent = 'ADICIONAR';
       Modals._open('modal-add-operacao');
     },
-    fecharAddOperacao() { Modals._close('modal-add-operacao'); },
+
+    abrirEditOperacao(opId) {
+      const op = S.operacoes[opId];
+      if (!op) return;
+      Modals._editOperacaoId = opId;
+      // Editar não usa template — esconde o seletor
+      const tmplSection = $('op-template-section');
+      if (tmplSection) tmplSection.style.display = 'none';
+
+      const set = (id, val) => { const el = $(id); if (el) el.value = val || ''; };
+      set('op-nome', op.nome);
+      set('op-bairro', op.bairro);
+      set('op-horario', op.horario);
+
+      const tipoSel = $('op-tipo-missao');
+      if (tipoSel) tipoSel.innerHTML = `<option value="">— Selecionar —</option>` +
+        CFG.TIPOS_MISSAO.map(t => `<option${t===op.tipoMissao?' selected':''}>${t}</option>`).join('');
+
+      const h3  = document.querySelector('#modal-add-operacao .modal-header h3');
+      const btn = document.querySelector('#modal-add-operacao .btn-primary');
+      if (h3)  h3.textContent  = 'EDITAR OPERAÇÃO';
+      if (btn) btn.textContent = 'SALVAR ALTERAÇÕES';
+      Modals._open('modal-add-operacao');
+    },
+
+    fecharAddOperacao() {
+      Modals._editOperacaoId = null;
+      Modals._close('modal-add-operacao');
+    },
+
     async confirmarAddOperacao() {
+      // Edição: nunca passa por template
+      if (Modals._editOperacaoId) {
+        const nome       = $('op-nome')?.value.trim();
+        const bairro     = $('op-bairro')?.value.trim();
+        const hor        = $('op-horario')?.value;
+        const tipoMissao = $('op-tipo-missao')?.value;
+        if (!nome) { UI.toast('Nome é obrigatório','warning'); return; }
+        if (!tipoMissao) { UI.toast('Selecione o tipo de missão — usado no Relatório Mensal','warning'); return; }
+        await DB.editarOperacao(Modals._editOperacaoId, {
+          nome: upper(nome), bairro: upper(bairro), horario: hor, tipoMissao
+        });
+        Modals.fecharAddOperacao();
+        UI.toast('Operação atualizada!', 'success');
+        return;
+      }
+
       const templateId = $('op-template-select')?.value || '';
       // Com template: aplica diretamente (tipo de missão já vem do template)
       if (templateId) {
@@ -1692,14 +1982,42 @@ const NIT_EFETIVO = (() => {
     },
 
     // ── SUPERVISÃO ───────────────────────────────────────────
+    _editSupervisao: null, // { camada, recursoId } | null
+
     abrirAddSupervisao() {
       if (!S.escalaAtiva) { UI.toast('Abra um turno primeiro','warning'); return; }
+      Modals._editSupervisao = null;
       const items = recursosOrdenados()
         .map(([id,r]) => ({ value:id, label:`${r.nome} · ${r.cargo||'—'}` }));
       Modals._montarCombo('sup-recurso-input', 'sup-recurso-list', items);
+      const fEl = $('sup-funcao'), cEl = $('sup-contato');
+      if (fEl) fEl.value = ''; if (cEl) cEl.value = '';
+      const h3 = document.querySelector('#modal-add-supervisao .modal-header h3');
+      if (h3) h3.textContent = 'SUPERVISÃO E MONITORAMENTO';
       Modals._open('modal-add-supervisao');
     },
-    fecharAddSupervisao() { Modals._close('modal-add-supervisao'); },
+
+    abrirEditSupervisao(camada, recursoId) {
+      if (!S.escalaAtiva) return;
+      const info = S.escalas[S.escalaAtiva]?.supervisao?.[camada]?.[recursoId];
+      if (!info) return;
+      Modals._editSupervisao = { camada, recursoId };
+      const items = recursosOrdenados()
+        .map(([id,r]) => ({ value:id, label:`${r.nome} · ${r.cargo||'—'}` }));
+      Modals._montarCombo('sup-recurso-input', 'sup-recurso-list', items, recursoId);
+      const camadaSel = $('sup-camada'); if (camadaSel) camadaSel.value = camada;
+      const fEl = $('sup-funcao');  if (fEl) fEl.value = info.funcao  || '';
+      const cEl = $('sup-contato'); if (cEl) cEl.value = info.contato || '';
+      const h3 = document.querySelector('#modal-add-supervisao .modal-header h3');
+      if (h3) h3.textContent = 'EDITAR SUPERVISÃO';
+      Modals._open('modal-add-supervisao');
+    },
+
+    fecharAddSupervisao() {
+      Modals._editSupervisao = null;
+      Modals._close('modal-add-supervisao');
+    },
+
     async confirmarAddSupervisao() {
       const recId   = Modals._resolverCombo('sup-recurso-input');
       const camada  = $('sup-camada')?.value;
@@ -1707,10 +2025,20 @@ const NIT_EFETIVO = (() => {
       const contato = $('sup-contato')?.value.trim();
       if (!recId)   { UI.toast('Selecione um recurso válido da lista','warning'); return; }
       if (!camada)  { UI.toast('Selecione a função','warning'); return; }
-      await S.db.ref(`efetivo/escalas/${S.escalaAtiva}/supervisao/${camada}/${recId}`)
-        .set({ funcao, contato });
+
+      // Em edição, remove a entrada antiga antes de gravar a nova —
+      // cobre o caso de ter trocado de pessoa ou de camada sem deixar
+      // uma entrada duplicada pra trás.
+      if (Modals._editSupervisao) {
+        const { camada: camadaAntiga, recursoId: recIdAntigo } = Modals._editSupervisao;
+        if (camadaAntiga !== camada || recIdAntigo !== recId) {
+          await DB.removerSupervisao(S.escalaAtiva, camadaAntiga, recIdAntigo);
+        }
+      }
+      await DB.editarSupervisao(S.escalaAtiva, camada, recId, { funcao, contato });
+      const eraEdicao = !!Modals._editSupervisao;
       Modals.fecharAddSupervisao();
-      UI.toast('Adicionado à supervisão!', 'success');
+      UI.toast(eraEdicao ? 'Supervisão atualizada!' : 'Adicionado à supervisão!', 'success');
     },
 
     // ── TEMPLATES ────────────────────────────────────────────
@@ -1988,13 +2316,46 @@ const NIT_EFETIVO = (() => {
     },
 
     // ── CADASTRAR RECURSO ─────────────────────────────────────
-    abrirCadastroRecurso()  { Modals._open('modal-cadastro-recurso'); },
-    fecharCadastroRecurso() { Modals._close('modal-cadastro-recurso'); },
+    _editRecursoId: null, // null = modo criação; string = modo edição
+
+    abrirCadastroRecurso() {
+      Modals._editRecursoId = null;
+      const h3  = document.querySelector('#modal-cadastro-recurso .modal-header h3');
+      const btn = document.querySelector('#modal-cadastro-recurso .btn-primary');
+      if (h3)  h3.textContent  = 'CADASTRAR RECURSO';
+      if (btn) btn.textContent = 'CADASTRAR';
+      Modals._open('modal-cadastro-recurso');
+    },
+
+    abrirEditRecurso(id) {
+      const r = S.recursos[id];
+      if (!r) return;
+      Modals._editRecursoId = id;
+      const set = (elId, val) => { const el = $(elId); if (el) el.value = val || ''; };
+      set('rec-nome', r.nome);
+      set('rec-matricula', r.matricula);
+      set('rec-cargo', r.cargo);
+      set('rec-turno', r.turno_padrao);
+      set('rec-telefone', r.telefone);
+      set('rec-transporte', r.transporte);
+      set('rec-bairro', r.bairro);
+      const h3  = document.querySelector('#modal-cadastro-recurso .modal-header h3');
+      const btn = document.querySelector('#modal-cadastro-recurso .btn-primary');
+      if (h3)  h3.textContent  = 'EDITAR RECURSO';
+      if (btn) btn.textContent = 'SALVAR ALTERAÇÕES';
+      Modals._open('modal-cadastro-recurso');
+    },
+
+    fecharCadastroRecurso() {
+      Modals._editRecursoId = null;
+      Modals._close('modal-cadastro-recurso');
+    },
+
     async confirmarCadastroRecurso() {
       const nome  = upper($('rec-nome')?.value.trim());
       const mat   = $('rec-matricula')?.value.trim();
       if (!nome||!mat) { UI.toast('Nome e matrícula são obrigatórios','warning'); return; }
-      await DB.cadastrarRecurso({
+      const dados = {
         nome,
         matricula:  mat,
         cargo:      $('rec-cargo')?.value      || '',
@@ -2002,9 +2363,15 @@ const NIT_EFETIVO = (() => {
         turno_padrao:$('rec-turno')?.value     || 'manha',
         transporte: $('rec-transporte')?.value || 'proprio',
         bairro:     upper($('rec-bairro')?.value.trim())
-      });
+      };
+      if (Modals._editRecursoId) {
+        await DB.editarRecurso(Modals._editRecursoId, dados);
+        UI.toast('Recurso atualizado!', 'success');
+      } else {
+        await DB.cadastrarRecurso(dados);
+        UI.toast('Recurso cadastrado!', 'success');
+      }
       Modals.fecharCadastroRecurso();
-      UI.toast('Recurso cadastrado!', 'success');
     },
 
     // ── EQUIPES / VIATURAS — entidade persistente entre turnos ──
@@ -2089,6 +2456,50 @@ const NIT_EFETIVO = (() => {
       vibrar(40);
       await DB.setStatusRecurso(id, status);
       UI.toast(`Status → ${upper(status)}`, 'info');
+    },
+
+    async excluirRecurso(id) {
+      const r = S.recursos[id];
+      if (!r) return;
+      if (!confirm(`Excluir o recurso "${r.nome}"?\n\nEsta ação não pode ser desfeita.`)) return;
+      vibrar([60,40,60]);
+      try {
+        await DB.excluirRecurso(id);
+        UI.toast('Recurso excluído.', 'info');
+      } catch (e) {
+        if (e.message === 'RECURSO_EM_USO') {
+          UI.toast('Não é possível excluir: o recurso está alocado em um QRU ativo. Libere-o primeiro.', 'danger');
+        } else {
+          console.error('[excluirRecurso]', e);
+          UI.toast('Erro ao excluir recurso.', 'danger');
+        }
+      }
+    },
+
+    async excluirEscala(escalaId) {
+      const escala = S.escalas[escalaId];
+      if (!escala) return;
+      if (!confirm(`Excluir este turno inteiro?\n\nTodas as operações e QRUs dele serão removidos. Os recursos alocados voltam para DISPONÍVEL.\n\nEsta ação não pode ser desfeita.`)) return;
+      vibrar([60,40,60]);
+      await DB.excluirEscala(escalaId);
+      UI.toast('Turno excluído.', 'info');
+    },
+
+    async excluirOperacao(opId) {
+      const op = S.operacoes[opId];
+      if (!op) return;
+      const nPostos = Object.values(S.postos).filter(p => p.operacaoId === opId).length;
+      if (!confirm(`Excluir a operação "${op.nome}"?\n\n${nPostos} QRU(s) dela serão removidos junto. Os recursos alocados voltam para DISPONÍVEL.`)) return;
+      vibrar([60,40,60]);
+      await DB.excluirOperacao(opId);
+      UI.toast('Operação excluída.', 'info');
+    },
+
+    async removerSupervisao(escalaId, camada, recursoId) {
+      if (!confirm('Remover esta pessoa da supervisão do turno?')) return;
+      vibrar(40);
+      await DB.removerSupervisao(escalaId, camada, recursoId);
+      UI.toast('Removido da supervisão.', 'info');
     },
 
     async excluirPosto(postoId) {
