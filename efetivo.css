@@ -911,7 +911,7 @@ input, select, button, textarea {
 .modal-grid-2 {
   display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px;
 }
-.modal-grid-2 .grid-full { grid-column: 1 / -1; }
+.modal-grid-2 .grid-full, .form-row .grid-full { grid-column: 1 / -1; }
 
 .modal-footer {
   display: flex; justify-content: flex-end; gap: 8px;
@@ -1121,6 +1121,22 @@ input, select, button, textarea {
   margin-top: 10px; font-size: 0.75rem;
 }
 .input-spaced { margin-bottom: 8px; }
+
+/* ── RELATÓRIO MENSAL ───────────────────────────────────────── */
+.relatorio-card { margin-top: 20px; }
+.relatorio-body { padding: 4px 16px 16px; }
+.relatorio-body p { margin-bottom: 12px; font-size: 0.82rem; }
+.relatorio-status {
+  margin-top: 12px; padding: 10px 12px;
+  border-radius: var(--radius); font-size: 0.8rem;
+  background: var(--color-accent-dim); color: var(--color-accent);
+}
+.relatorio-status.relatorio-erro {
+  background: var(--color-danger-dim); color: var(--color-danger);
+}
+.relatorio-status.relatorio-sucesso {
+  background: var(--color-success-dim); color: var(--color-success);
+}
 
 @media (max-width: 768px) {
   .tab-pane { padding: 12px; }
