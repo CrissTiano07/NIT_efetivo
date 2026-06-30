@@ -143,6 +143,10 @@
       onclick="NIT_EFETIVO.UI.switchTab('campo-preview')">
       🔍 MODO CAMPO
     </button>
+    <button class="tab-btn" data-tab="templates" role="tab"
+      onclick="NIT_EFETIVO.UI.switchTab('templates'); NIT_EFETIVO.UI.renderTemplates()">
+      📐 TEMPLATES
+    </button>
   </div>
 
   <!-- TAB: ESCALA ──────────────────────────────────────────── -->
@@ -190,6 +194,13 @@
         </div>
       </div>
       <div id="preview-resultado" class="campo-resultado-area"></div>
+    </div>
+  </div>
+
+  <!-- TAB: TEMPLATES ───────────────────────────────────────── -->
+  <div id="tab-templates" class="tab-pane hidden" role="tabpanel">
+    <div id="templates-container" class="recursos-container">
+      <div class="loading-state"><div class="spinner"></div><span>Carregando templates...</span></div>
     </div>
   </div>
 
@@ -244,6 +255,15 @@
       <button class="modal-close" onclick="NIT_EFETIVO.Modals.fecharAddOperacao()">×</button>
     </div>
     <div class="modal-body">
+      <!-- Selector de template (ocultado se não há templates) -->
+      <div id="op-template-section">
+        <label class="form-label">Usar template</label>
+        <select id="op-template-select" class="select-field">
+          <option value="">— Sem template (operação manual) —</option>
+        </select>
+        <div class="form-divider">ou preencha manualmente:</div>
+      </div>
+
       <label class="form-label">Nome da operação / evento *</label>
       <input id="op-nome" type="text" class="input-field" placeholder="Ex: CICLOFAIXA DE LAZER" autocomplete="off">
 
@@ -256,6 +276,45 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="NIT_EFETIVO.Modals.fecharAddOperacao()">CANCELAR</button>
       <button class="btn btn-primary" onclick="NIT_EFETIVO.Modals.confirmarAddOperacao()">ADICIONAR</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Criar / Editar Template ──────────────────────────── -->
+<div id="modal-criar-template" class="modal-overlay" onclick="NIT_EFETIVO.Modals._onOverlayClick(event,'modal-criar-template')">
+  <div class="modal-card modal-card-lg">
+    <div class="modal-header">
+      <h3>NOVO TEMPLATE</h3>
+      <button class="modal-close" onclick="NIT_EFETIVO.Modals.fecharCriarTemplate()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="grid-full">
+          <label class="form-label">Nome da operação *</label>
+          <input id="tmpl-nome" type="text" class="input-field" placeholder="Ex: CICLOFAIXA DE LAZER">
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label class="form-label">Bairro / Área</label>
+          <input id="tmpl-bairro" type="text" class="input-field" placeholder="Ex: ALDEOTA">
+        </div>
+        <div>
+          <label class="form-label">Horário padrão</label>
+          <input id="tmpl-horario" type="time" class="input-field">
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 8px">
+        <label class="form-label" style="margin:0">POSTOS PADRÃO</label>
+        <button class="btn btn-secondary btn-sm"
+          onclick="NIT_EFETIVO.Modals._adicionarTmplPosto()">+ POSTO</button>
+      </div>
+      <div id="tmpl-postos-lista" class="tmpl-postos-container"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="NIT_EFETIVO.Modals.fecharCriarTemplate()">CANCELAR</button>
+      <button class="btn btn-primary" onclick="NIT_EFETIVO.Modals.confirmarCriarTemplate()">SALVAR TEMPLATE</button>
     </div>
   </div>
 </div>
