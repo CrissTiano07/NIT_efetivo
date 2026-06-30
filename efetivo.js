@@ -15,13 +15,13 @@ const NIT_EFETIVO = (() => {
   // ═══════════════════════════════════════════════════════════════
   const CFG = {
     firebase: {
-      apiKey:            'AIzaSyCWAGfmCr-pHr0asIk_Sfz1WbajIEhiZn0',
+      apiKey:            'SUBSTITUIR_API_KEY',
       authDomain:        'nit-operacional.firebaseapp.com',
       databaseURL:       'https://nit-operacional-default-rtdb.firebaseio.com',
       projectId:         'nit-operacional',
       storageBucket:     'nit-operacional.appspot.com',
-      messagingSenderId: '823046484118',
-      appId:             '1:823046484118:web:487159cabb28ae275bd2b7'
+      messagingSenderId: 'SUBSTITUIR',
+      appId:             'SUBSTITUIR'
     },
     TURNOS: {
       manha: { label:'MANHÃ',  inicio:'05:30', fim:'11:30', minI:330,  minF:690  },
@@ -50,6 +50,7 @@ const NIT_EFETIVO = (() => {
     operacoes:      {},
     postos:         {},
     escalaAtiva:    null,   // pushKey da escala com status=='ativo' hoje
+    templates:      {},     // operações recorrentes pré-configuradas
     _unsubs:        [],     // listeners a desanexar no logout
     _campoOk:       false   // flag: dados do modo campo carregados
   };
@@ -168,6 +169,7 @@ const NIT_EFETIVO = (() => {
       DB._listenEscalas();
       DB._listenOperacoes();
       DB._listenPostos();
+      DB._listenTemplates();
     },
 
     // ── Modo Campo: one-time reads (não consume slot WebSocket extra) ─
@@ -263,6 +265,15 @@ const NIT_EFETIVO = (() => {
       S._unsubs.push(() => ref.off('value', fn));
     },
 
+    _listenTemplates() {
+      const ref = S.db.ref('efetivo/templates/operacoes');
+      const fn  = ref.on('value', snap => {
+        S.templates = snap.val() || {};
+        UI.renderTemplates();
+      });
+      S._unsubs.push(() => ref.off('value', fn));
+    },
+
     // ── Writes ──────────────────────────────────────────────────
     async criarEscala(dados) {
       const ref = await S.db.ref('efetivo/escalas').push({
@@ -314,6 +325,75 @@ const NIT_EFETIVO = (() => {
         ...dados, updatedAt: Date.now(), updatedBy: S.user?.email
       });
       Log.write('posto_editado', null, { postoId, local: dados.local });
+    },
+
+    async excluirPosto(postoId) {
+      const posto = S.postos[postoId];
+      if (!posto) return;
+      // Liberar recurso alocado
+      if (posto.alocacao?.tipo === 'agente' && posto.alocacao?.id)
+        await DB.setStatusRecurso(posto.alocacao.id, 'disponivel');
+      if (posto.alocacao?.tipo === 'viatura' && posto.alocacao?.id)
+        await S.db.ref(`efetivo/viaturas/${posto.alocacao.id}/status`).set('disponivel');
+      await S.db.ref(`efetivo/postos/${postoId}`).remove();
+      Log.write('posto_excluido', null, { postoId, local: posto.local, numero: posto.numero });
+    },
+
+    async salvarTemplate(dados, templateId = null) {
+      const payload = {
+        ...dados,
+        updatedAt: Date.now(),
+        updatedBy: S.user?.email
+      };
+      if (templateId) {
+        await S.db.ref(`efetivo/templates/operacoes/${templateId}`).update(payload);
+        Log.write('template_editado', null, { templateId, nome: dados.nome });
+        return templateId;
+      } else {
+        payload.criadoEm  = Date.now();
+        payload.criadoPor = S.user?.email;
+        const ref = await S.db.ref('efetivo/templates/operacoes').push(payload);
+        Log.write('template_criado', null, { templateId: ref.key, nome: dados.nome });
+        return ref.key;
+      }
+    },
+
+    async excluirTemplate(templateId) {
+      const t = S.templates[templateId];
+      await S.db.ref(`efetivo/templates/operacoes/${templateId}`).remove();
+      Log.write('template_excluido', null, { templateId, nome: t?.nome });
+    },
+
+    // Aplica template: cria operação + todos os postos padrão (sem alocação)
+    async aplicarTemplate(templateId, escalaId) {
+      const tmpl = S.templates[templateId];
+      if (!tmpl) return;
+      const opId = await DB.adicionarOperacao(escalaId, {
+        nome:    tmpl.nome,
+        bairro:  tmpl.bairro  || '',
+        horario: tmpl.horario || '',
+        templateId
+      });
+      const postos = tmpl.postosPadrao || [];
+      for (const p of postos) {
+        const postosEscala = Object.values(S.postos).filter(x => x.escalaId === escalaId);
+        const numero = postosEscala.length > 0
+          ? Math.max(...postosEscala.map(x => x.numero||0)) + 1 : 1;
+        await S.db.ref('efetivo/postos').push({
+          escalaId, operacaoId: opId,
+          numero,
+          local:     upper(p.local || ''),
+          bairro:    upper(tmpl.bairro || ''),
+          horario:   tmpl.horario || '',
+          tipoAcao:  p.tipoAcao || 'CONTROLE',
+          alocacao:  null,
+          qruPessoas:1,
+          obs:       '',
+          criadoEm:  Date.now()
+        });
+      }
+      Log.write('template_aplicado', null, { templateId, escalaId, nome: tmpl.nome });
+      return opId;
     },
 
     async setStatusRecurso(id, status) {
@@ -634,7 +714,10 @@ const NIT_EFETIVO = (() => {
           <span class="posto-alocado-nome">${nome}</span>
           <span class="badge-acao">${esc(posto.tipoAcao||'')}</span>
           ${posto.obs ? `<span class="posto-obs">${esc(posto.obs)}</span>` : ''}
-          ${writeable ? `<button class="btn-icon" title="Editar QRU" onclick="NIT_EFETIVO.Modals.abrirEditPosto('${postoId}')">✏️</button>` : ''}
+          ${writeable ? `
+            <button class="btn-icon" title="Editar QRU" onclick="NIT_EFETIVO.Modals.abrirEditPosto('${postoId}')">✏️</button>
+            <button class="btn-icon" title="Excluir QRU" onclick="NIT_EFETIVO.Actions.excluirPosto('${postoId}')">🗑️</button>
+          ` : ''}
         </div>`;
       }).join('');
 
@@ -786,7 +869,67 @@ const NIT_EFETIVO = (() => {
         </div>`;
     },
 
-    // ── MODO CAMPO — resultado da busca ───────────────────────
+    // ── TEMPLATES ─────────────────────────────────────────────
+    renderTemplates() {
+      const cont = $('templates-container');
+      if (!cont) return;
+
+      const lista = Object.entries(S.templates)
+        .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'));
+
+      const cards = lista.map(([id, t]) => {
+        const nPostos = (t.postosPadrao||[]).length;
+        return `<div class="bloco-card template-card">
+          <div class="template-header">
+            <div class="template-info">
+              <span class="template-nome">${esc(t.nome)}</span>
+              ${t.bairro ? `<span class="template-bairro">${upper(t.bairro)}</span>` : ''}
+              ${t.horario ? `<span class="template-horario">${t.horario}h</span>` : ''}
+              <span class="op-count">${nPostos} posto${nPostos!==1?'s':''} padrão</span>
+            </div>
+            <div class="template-acoes">
+              ${S.escalaAtiva
+                ? `<button class="btn btn-primary btn-sm"
+                     onclick="NIT_EFETIVO.Actions.aplicarTemplate('${id}')">
+                     ▶ APLICAR NO TURNO
+                   </button>`
+                : '<span class="text-muted" style="font-size:.75rem">Abra um turno para aplicar</span>'}
+              <button class="btn-icon" title="Editar template"
+                onclick="NIT_EFETIVO.Modals.abrirEditTemplate('${id}')">✏️</button>
+              <button class="btn-icon" title="Excluir template"
+                onclick="NIT_EFETIVO.Actions.excluirTemplate('${id}')">🗑️</button>
+            </div>
+          </div>
+          <div class="template-postos">
+            ${(t.postosPadrao||[]).map((p,i) => `
+              <div class="template-posto-linha">
+                <span class="posto-num">[${i+1}]</span>
+                <span class="posto-local">${esc(p.local)}</span>
+                <span class="badge-acao">${esc(p.tipoAcao||'CONTROLE')}</span>
+              </div>`).join('')}
+          </div>
+        </div>`;
+      }).join('');
+
+      cont.innerHTML = `
+        <div class="recursos-toolbar">
+          <div class="recursos-badges">
+            <span class="badge badge-muted">${lista.length} template${lista.length!==1?'s':''}</span>
+          </div>
+          <button class="btn btn-primary btn-sm"
+            onclick="NIT_EFETIVO.Modals.abrirCriarTemplate()">+ NOVO TEMPLATE</button>
+        </div>
+        ${lista.length
+          ? cards
+          : `<div class="sem-escala">
+               <div class="sem-escala-icon">📐</div>
+               <h3>Nenhum template criado</h3>
+               <p>Crie templates para operações recorrentes como a Ciclofaixa e aplicar com um clique na abertura do turno.</p>
+               <button class="btn btn-primary"
+                 onclick="NIT_EFETIVO.Modals.abrirCriarTemplate()">CRIAR PRIMEIRO TEMPLATE</button>
+             </div>`}
+      `;
+    },
     renderResultadoCampo(dados, alvoId = 'campo-resultado') {
       const cont = $(alvoId);
       if (!cont) return;
@@ -940,10 +1083,37 @@ const NIT_EFETIVO = (() => {
     // ── NOVA OPERAÇÃO ────────────────────────────────────────
     abrirAddOperacao() {
       if (!S.escalaAtiva) { UI.toast('Abra um turno primeiro','warning'); return; }
+      // Mostrar ou ocultar selector de templates
+      const tmplSection = $('op-template-section');
+      const tmplSel     = $('op-template-select');
+      const templates   = Object.entries(S.templates);
+      if (tmplSection && tmplSel) {
+        if (templates.length) {
+          tmplSection.style.display = '';
+          tmplSel.innerHTML =
+            `<option value="">— Sem template (operação manual) —</option>` +
+            templates
+              .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'))
+              .map(([id,t]) => `<option value="${id}">${esc(t.nome)}${t.bairro?' · '+upper(t.bairro):''}</option>`)
+              .join('');
+        } else {
+          tmplSection.style.display = 'none';
+        }
+      }
       Modals._open('modal-add-operacao');
     },
     fecharAddOperacao() { Modals._close('modal-add-operacao'); },
     async confirmarAddOperacao() {
+      const templateId = $('op-template-select')?.value || '';
+      // Com template: aplica diretamente
+      if (templateId) {
+        await DB.aplicarTemplate(templateId, S.escalaAtiva);
+        Modals.fecharAddOperacao();
+        const t = S.templates[templateId];
+        UI.toast(`Template "${esc(t?.nome)}" aplicado!`, 'success');
+        return;
+      }
+      // Sem template: operação manual
       const nome   = $('op-nome')?.value.trim();
       const bairro = $('op-bairro')?.value.trim();
       const hor    = $('op-horario')?.value;
@@ -1112,6 +1282,89 @@ const NIT_EFETIVO = (() => {
       UI.toast('Adicionado à supervisão!', 'success');
     },
 
+    // ── TEMPLATES ────────────────────────────────────────────
+    _editTemplateId: null,  // null = criar; string = editar
+    _tmplPostos:     [],    // lista de postos em edição
+
+    abrirCriarTemplate()  { Modals._abrirFormTemplate(null); },
+    abrirEditTemplate(id) { Modals._abrirFormTemplate(id); },
+    fecharCriarTemplate() {
+      Modals._editTemplateId = null;
+      Modals._tmplPostos = [];
+      Modals._close('modal-criar-template');
+    },
+
+    _abrirFormTemplate(templateId) {
+      Modals._editTemplateId = templateId;
+      const t = templateId ? (S.templates[templateId] || {}) : {};
+      Modals._tmplPostos = templateId
+        ? [...(t.postosPadrao || [])].map(p => ({ ...p }))
+        : [];
+
+      const nomeEl   = $('tmpl-nome');
+      const bairroEl = $('tmpl-bairro');
+      const horEl    = $('tmpl-horario');
+      if (nomeEl)   nomeEl.value   = t.nome    || '';
+      if (bairroEl) bairroEl.value = t.bairro  || '';
+      if (horEl)    horEl.value    = t.horario || '';
+
+      const h3 = document.querySelector('#modal-criar-template .modal-header h3');
+      if (h3) h3.textContent = templateId ? 'EDITAR TEMPLATE' : 'NOVO TEMPLATE';
+
+      Modals._renderTmplPostos();
+      Modals._open('modal-criar-template');
+    },
+
+    _renderTmplPostos() {
+      const cont = $('tmpl-postos-lista');
+      if (!cont) return;
+      if (!Modals._tmplPostos.length) {
+        cont.innerHTML = '<p class="text-muted" style="text-align:center;padding:12px">Nenhum posto adicionado</p>';
+        return;
+      }
+      cont.innerHTML = Modals._tmplPostos.map((p, i) => `
+        <div class="tmpl-posto-linha">
+          <span class="posto-num">[${i+1}]</span>
+          <input class="input-field" style="flex:1" value="${esc(p.local)}"
+            oninput="NIT_EFETIVO.Modals._tmplPostos[${i}].local=this.value.toUpperCase();this.value=this.value.toUpperCase()"
+            placeholder="Endereço do posto">
+          <select class="select-field" style="width:160px"
+            onchange="NIT_EFETIVO.Modals._tmplPostos[${i}].tipoAcao=this.value">
+            ${CFG.TIPOS_ACAO.map(t =>
+              `<option${t===p.tipoAcao?' selected':''}>${t}</option>`).join('')}
+          </select>
+          <button class="btn-icon" onclick="NIT_EFETIVO.Modals._removerTmplPosto(${i})">🗑️</button>
+        </div>`).join('');
+    },
+
+    _adicionarTmplPosto() {
+      Modals._tmplPostos.push({ local:'', tipoAcao:'CONTROLE' });
+      Modals._renderTmplPostos();
+      // Focar no último input adicionado
+      const inputs = document.querySelectorAll('.tmpl-posto-linha input');
+      if (inputs.length) inputs[inputs.length-1].focus();
+    },
+
+    _removerTmplPosto(idx) {
+      Modals._tmplPostos.splice(idx, 1);
+      Modals._renderTmplPostos();
+    },
+
+    async confirmarCriarTemplate() {
+      const nome   = upper($('tmpl-nome')?.value.trim());
+      const bairro = upper($('tmpl-bairro')?.value.trim());
+      const hor    = $('tmpl-horario')?.value;
+      if (!nome) { UI.toast('Nome do template é obrigatório','warning'); return; }
+      const postosValidos = Modals._tmplPostos.filter(p => p.local.trim());
+      if (!postosValidos.length) { UI.toast('Adicione ao menos um posto','warning'); return; }
+      await DB.salvarTemplate(
+        { nome, bairro, horario:hor, postosPadrao: postosValidos },
+        Modals._editTemplateId
+      );
+      Modals.fecharCriarTemplate();
+      UI.toast(Modals._editTemplateId ? 'Template atualizado!' : 'Template criado!', 'success');
+    },
+
     // ── CADASTRAR RECURSO ─────────────────────────────────────
     abrirCadastroRecurso()  { Modals._open('modal-cadastro-recurso'); },
     fecharCadastroRecurso() { Modals._close('modal-cadastro-recurso'); },
@@ -1142,6 +1395,35 @@ const NIT_EFETIVO = (() => {
       await DB.setStatusRecurso(id, status);
       UI.toast(`Status → ${upper(status)}`, 'info');
     },
+
+    async excluirPosto(postoId) {
+      const posto = S.postos[postoId];
+      if (!posto) return;
+      if (!confirm(`Excluir QRU [${posto.numero}] ${posto.local}?\n\nO recurso alocado será liberado.`)) return;
+      vibrar([60,40,60]);
+      await DB.excluirPosto(postoId);
+      UI.toast('QRU excluído.', 'info');
+    },
+
+    async excluirTemplate(templateId) {
+      const t = S.templates[templateId];
+      if (!t) return;
+      if (!confirm(`Excluir template "${t.nome}"?\n\nEscalas já criadas com este template não são afetadas.`)) return;
+      vibrar([60,40,60]);
+      await DB.excluirTemplate(templateId);
+      UI.toast('Template excluído.', 'info');
+    },
+
+    async aplicarTemplate(templateId) {
+      const t = S.templates[templateId];
+      if (!t || !S.escalaAtiva) return;
+      if (!confirm(`Aplicar template "${t.nome}"?\n\n${(t.postosPadrao||[]).length} postos serão criados sem alocação — você designa os agentes em seguida.`)) return;
+      vibrar(50);
+      await DB.aplicarTemplate(templateId, S.escalaAtiva);
+      UI.switchTab('escala');
+      UI.toast(`"${t.nome}" aplicado! Designe os agentes nos postos.`, 'success');
+    },
+
     async encerrarEscala() {
       if (!S.escalaAtiva) return;
       if (!confirm('Encerrar o turno?\n\nOs recursos escalados voltarão para DISPONÍVEL.')) return;
