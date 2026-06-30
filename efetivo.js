@@ -15,13 +15,13 @@ const NIT_EFETIVO = (() => {
   // ═══════════════════════════════════════════════════════════════
   const CFG = {
     firebase: {
-      apiKey:            'AIzaSyCWAGfmCr-pHr0asIk_Sfz1WbajIEhiZn0',
+      apiKey:            'SUBSTITUIR_API_KEY',
       authDomain:        'nit-operacional.firebaseapp.com',
       databaseURL:       'https://nit-operacional-default-rtdb.firebaseio.com',
       projectId:         'nit-operacional',
       storageBucket:     'nit-operacional.appspot.com',
-      messagingSenderId: '823046484118',
-      appId:             '1:823046484118:web:487159cabb28ae275bd2b7'
+      messagingSenderId: 'SUBSTITUIR',
+      appId:             'SUBSTITUIR'
     },
     TURNOS: {
       manha: { label:'MANHÃ',  inicio:'05:30', fim:'11:30', minI:330,  minF:690  },
@@ -419,6 +419,47 @@ const NIT_EFETIVO = (() => {
       });
       Log.write('recurso_cadastrado', ref.key, { nome:dados.nome, matricula:dados.matricula });
       return ref.key;
+    },
+
+    // ── EQUIPES / VIATURAS — entidade persistente, independente de turno ──
+    async cadastrarViatura(dados) {
+      const ref = await S.db.ref('efetivo/viaturas').push({
+        ...dados, status:'disponivel', criadoEm: Date.now(), criadoPor: S.user?.email
+      });
+      Log.write('viatura_cadastrada', null, { viaturaId: ref.key, nome: dados.nome });
+      return ref.key;
+    },
+
+    async editarViatura(id, dados) {
+      await S.db.ref(`efetivo/viaturas/${id}`).update({
+        ...dados, updatedAt: Date.now(), updatedBy: S.user?.email
+      });
+      Log.write('viatura_editada', null, { viaturaId: id, nome: dados.nome });
+    },
+
+    async excluirViatura(id) {
+      // Remove a viatura de qualquer escala onde estava escalada
+      const escalasComViatura = Object.entries(S.escalas)
+        .filter(([,e]) => e.viaturasEscaladas?.[id]);
+      await Promise.all(escalasComViatura.map(([eid]) =>
+        S.db.ref(`efetivo/escalas/${eid}/viaturasEscaladas/${id}`).remove()));
+      const v = S.viaturas[id];
+      await S.db.ref(`efetivo/viaturas/${id}`).remove();
+      Log.write('viatura_excluida', null, { viaturaId: id, nome: v?.nome });
+    },
+
+    // Toggle: equipe entra/sai do roster do turno ativo (sem recriar a equipe)
+    async toggleViaturaEscala(viaturaId) {
+      if (!S.escalaAtiva) return;
+      const ref   = S.db.ref(`efetivo/escalas/${S.escalaAtiva}/viaturasEscaladas/${viaturaId}`);
+      const ativa = !!S.escalas[S.escalaAtiva]?.viaturasEscaladas?.[viaturaId];
+      if (ativa) {
+        await ref.remove();
+        Log.write('viatura_removida_turno', null, { viaturaId, escalaId: S.escalaAtiva });
+      } else {
+        await ref.set(true);
+        Log.write('viatura_escalada_turno', null, { viaturaId, escalaId: S.escalaAtiva });
+      }
     }
   };
 
@@ -806,6 +847,67 @@ const NIT_EFETIVO = (() => {
             <tbody>${linhas || `<tr><td colspan="7" class="empty-cell">Nenhum resultado</td></tr>`}</tbody>
           </table>
         </div>`;
+    },
+
+    // ── EQUIPES / VIATURAS — persistentes, independentes de turno ───
+    renderEquipes() {
+      const cont = $('equipes-container');
+      if (!cont) return;
+
+      const lista = Object.entries(S.viaturas)
+        .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'));
+      const escaladasHoje = S.escalaAtiva
+        ? (S.escalas[S.escalaAtiva]?.viaturasEscaladas || {}) : {};
+      const w = canWrite();
+
+      const cards = lista.map(([id, v]) => {
+        const lider   = S.recursos[v.liderId] || {};
+        const membros = Object.keys(v.membrosIds || {})
+          .map(mid => S.recursos[mid]?.nome).filter(Boolean);
+        const noTurno = !!escaladasHoje[id];
+
+        return `<div class="bloco-card equipe-card">
+          <div class="equipe-header">
+            <div class="equipe-info">
+              <span class="equipe-nome">${esc(v.nome||'—')}</span>
+              <span class="badge badge-${v.status==='escalada'?'accent':'success'}">${upper(v.status||'disponivel')}</span>
+            </div>
+            ${w ? `
+              <div class="equipe-acoes">
+                ${S.escalaAtiva ? `
+                  <button class="btn btn-sm ${noTurno?'btn-secondary':'btn-primary'}"
+                    onclick="NIT_EFETIVO.Actions.toggleViaturaEscala('${id}')">
+                    ${noTurno ? '✓ NO TURNO' : '+ ESCALAR HOJE'}
+                  </button>` : ''}
+                <button class="btn-icon" title="Editar equipe" onclick="NIT_EFETIVO.Modals.abrirEditViatura('${id}')">✏️</button>
+                <button class="btn-icon" title="Excluir equipe" onclick="NIT_EFETIVO.Actions.excluirViatura('${id}')">🗑️</button>
+              </div>` : ''}
+          </div>
+          <div class="equipe-detalhes">
+            <span class="equipe-lider">Líder: <strong>${esc(lider.nome||'—')}</strong></span>
+            ${membros.length ? `<span class="equipe-membros"> · ${membros.map(esc).join(', ')}</span>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+
+      cont.innerHTML = `
+        <div class="recursos-toolbar">
+          <div class="recursos-badges">
+            <span class="badge badge-muted">${lista.length} equipe${lista.length!==1?'s':''}</span>
+            ${S.escalaAtiva
+              ? `<span class="badge badge-accent">${Object.keys(escaladasHoje).length} no turno hoje</span>`
+              : `<span class="badge badge-muted">Sem turno ativo</span>`}
+          </div>
+          ${w ? `<button class="btn btn-primary btn-sm" onclick="NIT_EFETIVO.Modals.abrirCadastroViatura()">+ EQUIPE</button>` : ''}
+        </div>
+        ${lista.length ? cards : `
+          <div class="sem-escala">
+            <div class="sem-escala-icon">🚓</div>
+            <h3>Nenhuma equipe cadastrada</h3>
+            <p>Cadastre equipes fixas (líder + tripulantes) uma vez e reutilize em todos os turnos — só escalando ou removendo do roster do dia.</p>
+            ${w ? `<button class="btn btn-primary" onclick="NIT_EFETIVO.Modals.abrirCadastroViatura()">CADASTRAR PRIMEIRA EQUIPE</button>` : ''}
+          </div>`}
+      `;
     },
 
     // ── MÉTRICAS ──────────────────────────────────────────────
@@ -1383,6 +1485,74 @@ const NIT_EFETIVO = (() => {
       });
       Modals.fecharCadastroRecurso();
       UI.toast('Recurso cadastrado!', 'success');
+    },
+
+    // ── EQUIPES / VIATURAS — entidade persistente entre turnos ──
+    _editViaturaId: null,  // null = criar; string = editar
+
+    abrirCadastroViatura()  { Modals._abrirFormViatura(null); },
+    abrirEditViatura(id)    { Modals._abrirFormViatura(id); },
+    fecharCadastroViatura() {
+      Modals._editViaturaId = null;
+      Modals._close('modal-cadastro-viatura');
+    },
+
+    _abrirFormViatura(viaturaId) {
+      Modals._editViaturaId = viaturaId;
+      const v = viaturaId ? (S.viaturas[viaturaId] || {}) : {};
+
+      const nomeEl = $('vt-nome');
+      if (nomeEl) nomeEl.value = v.nome || '';
+
+      // Selector de líder — todos os recursos ativos
+      const liderSel = $('vt-lider-select');
+      const recursosOrdenados = Object.entries(S.recursos)
+        .filter(([,r]) => r.status !== 'desligado')
+        .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'));
+      if (liderSel) {
+        liderSel.innerHTML = `<option value="">— Selecionar líder/condutor —</option>` +
+          recursosOrdenados.map(([id,r]) =>
+            `<option value="${id}"${v.liderId===id?' selected':''}>${esc(r.nome)} · ${r.cargo||''}</option>`
+          ).join('');
+      }
+
+      // Checklist de membros — todos os recursos, marcando os já vinculados
+      const membrosCont = $('vt-membros-lista');
+      if (membrosCont) {
+        const membrosAtuais = v.membrosIds || {};
+        membrosCont.innerHTML = recursosOrdenados.length
+          ? recursosOrdenados.map(([id,r]) => `
+              <label class="vt-membro-item">
+                <input type="checkbox" value="${id}"${membrosAtuais[id]?' checked':''}>
+                <span>${esc(r.nome)} · ${r.cargo||''}</span>
+              </label>`).join('')
+          : `<p class="text-muted" style="padding:8px">Cadastre recursos primeiro</p>`;
+      }
+
+      const h3 = document.querySelector('#modal-cadastro-viatura .modal-header h3');
+      if (h3) h3.textContent = viaturaId ? 'EDITAR EQUIPE' : 'CADASTRAR EQUIPE';
+
+      Modals._open('modal-cadastro-viatura');
+    },
+
+    async confirmarCadastroViatura() {
+      const nome    = upper($('vt-nome')?.value.trim());
+      const liderId = $('vt-lider-select')?.value;
+      if (!nome)    { UI.toast('Nome da equipe é obrigatório','warning'); return; }
+      if (!liderId) { UI.toast('Selecione o líder/condutor','warning'); return; }
+
+      const membrosIds = {};
+      document.querySelectorAll('#vt-membros-lista input[type=checkbox]:checked')
+        .forEach(el => { membrosIds[el.value] = true; });
+
+      if (Modals._editViaturaId) {
+        await DB.editarViatura(Modals._editViaturaId, { nome, liderId, membrosIds });
+        UI.toast('Equipe atualizada!', 'success');
+      } else {
+        await DB.cadastrarViatura({ nome, liderId, membrosIds });
+        UI.toast('Equipe cadastrada!', 'success');
+      }
+      Modals.fecharCadastroViatura();
     }
   };
 
@@ -1412,6 +1582,23 @@ const NIT_EFETIVO = (() => {
       vibrar([60,40,60]);
       await DB.excluirTemplate(templateId);
       UI.toast('Template excluído.', 'info');
+    },
+
+    async excluirViatura(id) {
+      const v = S.viaturas[id];
+      if (!v) return;
+      if (!confirm(`Excluir a equipe "${v.nome}"?\n\nSerá removida de qualquer turno onde estiver escalada.`)) return;
+      vibrar([60,40,60]);
+      await DB.excluirViatura(id);
+      UI.toast('Equipe excluída.', 'info');
+    },
+
+    async toggleViaturaEscala(id) {
+      if (!S.escalaAtiva) { UI.toast('Abra um turno primeiro','warning'); return; }
+      const estavaAtiva = !!S.escalas[S.escalaAtiva]?.viaturasEscaladas?.[id];
+      vibrar(40);
+      await DB.toggleViaturaEscala(id);
+      UI.toast(estavaAtiva ? 'Removida do turno.' : 'Equipe escalada para o turno!', 'success');
     },
 
     async aplicarTemplate(templateId) {
