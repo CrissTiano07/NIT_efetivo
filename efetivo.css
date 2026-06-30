@@ -994,6 +994,39 @@ input, select, button, textarea {
   width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer;
 }
 
+/* ── COMBOBOX DIGITÁVEL (substitui <datalist>, sem suporte confiável no iOS) ── */
+.combo-wrap { position: relative; }
+
+.combo-list {
+  display: none;
+  position: fixed; /* posição real calculada via JS — evita corte pela rolagem do modal */
+  z-index: 2000;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.combo-list.open { display: block; }
+
+.combo-item {
+  padding: 10px 12px;
+  font-size: .85rem; color: var(--text-secondary);
+  cursor: pointer; transition: background .1s;
+  border-bottom: 1px solid var(--border);
+}
+.combo-item:last-child { border-bottom: none; }
+.combo-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+.combo-item mark {
+  background: var(--accent-dim); color: var(--accent);
+  border-radius: 2px; padding: 0 1px;
+}
+.combo-empty, .combo-mais {
+  padding: 10px 12px; font-size: .78rem; color: var(--text-muted);
+  text-align: center; font-style: italic;
+}
+
 @media (max-width: 768px) {
   .tab-pane { padding: 12px; }
 
