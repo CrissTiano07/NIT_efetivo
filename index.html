@@ -361,7 +361,9 @@
       <select id="posto-tipo-acao" class="select-field"></select>
 
       <label class="form-label">Agente / Viatura *</label>
-      <select id="posto-recurso-select" class="select-field select-lg"></select>
+      <input id="posto-recurso-input" type="text" class="input-field" list="posto-recurso-datalist"
+        placeholder="Digite o nome do agente ou da equipe..." autocomplete="off">
+      <datalist id="posto-recurso-datalist"></datalist>
 
       <label class="form-label">Pessoas neste QRU</label>
       <input id="posto-qru-pessoas" type="number" class="input-field" value="1" min="1" max="20">
@@ -448,9 +450,14 @@
       <input id="vt-nome" type="text" class="input-field" placeholder="Ex: EQUIPE NONATO" autocomplete="off">
 
       <label class="form-label">Líder / Condutor *</label>
-      <select id="vt-lider-select" class="select-field select-lg"></select>
+      <input id="vt-lider-input" type="text" class="input-field" list="vt-lider-datalist"
+        placeholder="Digite o nome do líder..." autocomplete="off">
+      <datalist id="vt-lider-datalist"></datalist>
 
       <label class="form-label">Tripulantes / Membros</label>
+      <input id="vt-membros-filtro" type="text" class="input-field" style="margin-bottom:8px"
+        placeholder="Filtrar por nome..." autocomplete="off"
+        oninput="NIT_EFETIVO.Modals._filtrarMembros(this.value)">
       <div id="vt-membros-lista" class="vt-membros-container"></div>
 
       <p class="text-muted" style="margin-top:10px;font-size:.75rem">
@@ -473,7 +480,9 @@
     </div>
     <div class="modal-body">
       <label class="form-label">Recurso *</label>
-      <select id="sup-recurso-select" class="select-field select-lg"></select>
+      <input id="sup-recurso-input" type="text" class="input-field" list="sup-recurso-datalist"
+        placeholder="Digite o nome do recurso..." autocomplete="off">
+      <datalist id="sup-recurso-datalist"></datalist>
 
       <label class="form-label">Função na supervisão</label>
       <select id="sup-camada" class="select-field">
