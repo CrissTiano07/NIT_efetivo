@@ -25,7 +25,7 @@
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div id="login-screen">
   <div class="login-card">
-    <div class="login-badge">NIT</div>
+    <div class="brand-pill login-badge">NIT</div>
     <div class="login-logo">EFETIVO</div>
     <div class="login-tagline">NÚCLEO DE INTELIGÊNCIA DE TRÁFEGO</div>
     <div class="login-sub">CONTROLE OPERACIONAL DE EFETIVO</div>
@@ -61,7 +61,7 @@
     <header class="campo-header">
       <div class="campo-header-top">
         <div class="campo-logo-group">
-          <span class="campo-nit">NIT</span>
+          <span class="brand-pill">NIT</span>
           <span class="campo-efetivo-label">EFETIVO</span>
         </div>
         <div id="relogio-campo" class="campo-relogio">--:--:--</div>
@@ -112,7 +112,7 @@
   <!-- NAV ──────────────────────────────────────────────────── -->
   <nav class="dash-nav">
     <div class="nav-brand">
-      <span class="nav-nit">NIT</span>
+      <span class="brand-pill">NIT</span>
       <span class="nav-efetivo">EFETIVO</span>
       <span class="nav-sep">//</span>
       <span class="nav-version">v1.0</span>
@@ -121,6 +121,10 @@
       <div id="relogio-dash" class="nav-relogio">--:--:--</div>
     </div>
     <div class="nav-right">
+      <span id="conexao-status" class="status-indicator">
+        <span class="status-dot" id="conexao-dot"></span>
+        <span id="conexao-label">Conectando...</span>
+      </span>
       <span id="dash-role" class="nav-role-badge"></span>
       <span id="dash-user" class="nav-user"></span>
       <button class="btn-nav-logout" onclick="NIT_EFETIVO.Auth.logout()">SAIR</button>
@@ -321,8 +325,8 @@
         </div>
       </div>
 
-      <div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 8px">
-        <label class="form-label" style="margin:0">POSTOS PADRÃO</label>
+      <div class="tmpl-postos-header">
+        <label class="form-label">POSTOS PADRÃO</label>
         <button class="btn btn-secondary btn-sm"
           onclick="NIT_EFETIVO.Modals._adicionarTmplPosto()">+ POSTO</button>
       </div>
@@ -461,12 +465,12 @@
       </div>
 
       <label class="form-label">Tripulantes / Membros</label>
-      <input id="vt-membros-filtro" type="text" class="input-field" style="margin-bottom:8px"
+      <input id="vt-membros-filtro" type="text" class="input-field input-spaced"
         placeholder="Filtrar por nome..." autocomplete="off"
         oninput="NIT_EFETIVO.Modals._filtrarMembros(this.value)">
       <div id="vt-membros-lista" class="vt-membros-container"></div>
 
-      <p class="text-muted" style="margin-top:10px;font-size:.75rem">
+      <p class="text-muted modal-hint">
         Equipes cadastradas aqui ficam disponíveis em todos os turnos.
         Para usar hoje, vá em EQUIPES e clique em "ESCALAR HOJE".
       </p>
@@ -477,6 +481,7 @@
     </div>
   </div>
 </div>
+
 <!-- Modal: Adicionar à Supervisão ───────────────────────────── -->
 <div id="modal-add-supervisao" class="modal-overlay" onclick="NIT_EFETIVO.Modals._onOverlayClick(event,'modal-add-supervisao')">
   <div class="modal-card">
