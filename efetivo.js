@@ -82,9 +82,15 @@ const NIT_EFETIVO = (() => {
   // em vez do campo `label` salvo no Firebase. Isso corrige automaticamente
   // escalas criadas antes da remoção da duplicação de horário no label
   // (ex: label antigo = "MANHÃ 05:30–11:30"), sem precisar migrar dados.
+  // Para turnos "especial" (sem entrada fixa no CFG.TURNOS), o fallback usa
+  // o label salvo — a regex abaixo remove qualquer resíduo de horário
+  // ("HH:MM–HH:MM" ou "HH:MM-HH:MM") que tenha ficado gravado em labels
+  // antigos desse tipo, sem exigir migração de dados.
+  const RE_HORARIO_RESIDUAL = /\s+\d{1,2}:\d{2}\s*[–-]\s*\d{1,2}:\d{2}\s*$/;
   function turnoLabel(escala) {
     if (!escala) return '';
-    return CFG.TURNOS[escala.turno]?.label || escala.label || upper(escala.turno || '');
+    const base = CFG.TURNOS[escala.turno]?.label || escala.label || upper(escala.turno || '');
+    return base.replace(RE_HORARIO_RESIDUAL, '').trim();
   }
 
   function getTurnosAtivos() {
