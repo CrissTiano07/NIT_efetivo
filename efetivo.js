@@ -237,6 +237,7 @@ const NIT_EFETIVO = (() => {
       DB._listenOperacoes();
       DB._listenPostos();
       DB._listenTemplates();
+      DB._listenConexao();
     },
 
     // ── Modo Campo: one-time reads (não consume slot WebSocket extra) ─
@@ -337,6 +338,23 @@ const NIT_EFETIVO = (() => {
       const fn  = ref.on('value', snap => {
         S.templates = snap.val() || {};
         UI.renderTemplates();
+      });
+      S._unsubs.push(() => ref.off('value', fn));
+    },
+
+    // Indicador de conexão (dot + label no nav) — só no dashboard.
+    // Usa o path especial .info/connected do Firebase, que reflete o
+    // estado real do WebSocket (não depende de nenhum dado da aplicação).
+    _listenConexao() {
+      const ref = S.db.ref('.info/connected');
+      const fn  = ref.on('value', snap => {
+        const dot   = $('conexao-dot');
+        const label = $('conexao-label');
+        if (!dot || !label) return;
+        const online = snap.val() === true;
+        dot.className   = `status-dot ${online ? 'status-dot-online' : 'status-dot-offline'}`;
+        label.className = online ? 'status-label-online' : 'status-label-offline';
+        label.textContent = online ? 'Firebase online' : 'Sem conexão';
       });
       S._unsubs.push(() => ref.off('value', fn));
     },
