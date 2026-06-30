@@ -91,6 +91,8 @@ const NIT_EFETIVO = (() => {
     return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), delay); };
   }
 
+  let _buscaRecursoTimer = null; // debounce manual da busca de recursos (preserva foco)
+
   // ═══════════════════════════════════════════════════════════════
   // AUTH
   // ═══════════════════════════════════════════════════════════════
@@ -778,12 +780,27 @@ const NIT_EFETIVO = (() => {
     },
 
     // ── RECURSOS ──────────────────────────────────────────────
+    // Debounce do input — evita reconstruir o painel a cada tecla
+    _debouncedRenderRecursos() {
+      clearTimeout(_buscaRecursoTimer);
+      _buscaRecursoTimer = setTimeout(() => UI.renderRecursos(), 150);
+    },
+
     renderRecursos() {
       const cont = $('recursos-container');
       if (!cont) return;
 
+      // Preservar foco e posição do cursor do campo de busca entre re-renders.
+      // Sem isso, cada re-render (digitação OU update do Firebase em tempo
+      // real) recria o <input> via innerHTML e a digitação "trava" porque
+      // o foco se perde a cada tecla.
+      const buscaAnterior = $('busca-recurso');
+      const tinhaFoco      = document.activeElement === buscaAnterior;
+      const cursorPos      = tinhaFoco ? buscaAnterior.selectionStart : null;
+      const buscaValor     = buscaAnterior ? buscaAnterior.value : '';
+
       const filtroSt = $('filtro-status')?.value || 'todos';
-      const busca    = ($('busca-recurso')?.value || '').toLowerCase().trim();
+      const busca    = buscaValor.toLowerCase().trim();
       const corBadge = { disponivel:'success', escalado:'accent', ausente:'warning',
                          afastado:'muted', desligado:'danger' };
 
@@ -828,8 +845,8 @@ const NIT_EFETIVO = (() => {
           <div class="recursos-filtros">
             <input id="busca-recurso" class="input-search"
               placeholder="Buscar nome / cargo / matrícula..."
-              value="${esc(busca)}"
-              oninput="NIT_EFETIVO.UI.renderRecursos()">
+              value="${esc(buscaValor)}"
+              oninput="NIT_EFETIVO.UI._debouncedRenderRecursos()">
             <select id="filtro-status" class="select-filtro" onchange="NIT_EFETIVO.UI.renderRecursos()">
               <option value="todos"${filtroSt==='todos'?' selected':''}>TODOS</option>
               ${CFG.STATUS_RECURSO.map(s =>
@@ -847,6 +864,15 @@ const NIT_EFETIVO = (() => {
             <tbody>${linhas || `<tr><td colspan="7" class="empty-cell">Nenhum resultado</td></tr>`}</tbody>
           </table>
         </div>`;
+
+      // Restaurar foco e cursor, se o campo estava sendo usado
+      if (tinhaFoco) {
+        const buscaNovo = $('busca-recurso');
+        if (buscaNovo) {
+          buscaNovo.focus();
+          buscaNovo.setSelectionRange(cursorPos, cursorPos);
+        }
+      }
     },
 
     // ── EQUIPES / VIATURAS — persistentes, independentes de turno ───
@@ -1144,6 +1170,32 @@ const NIT_EFETIVO = (() => {
     },
     _onOverlayClick(e, id) { if (e.target.id === id) Modals._close(id); },
 
+    // ── COMBO DIGITÁVEL (input + datalist) ────────────────────
+    // Substitui <select> simples por campo de texto com sugestões nativas.
+    // Permite digitar para filtrar — essencial quando a lista de recursos
+    // cresce além de 10-15 itens (rolar um select fechado não escala).
+    _comboMaps: {}, // { inputId: { "LABEL EM CAIXA ALTA": valorResolvido } }
+
+    _montarCombo(inputId, datalistId, items, selectedValue = null) {
+      const inp = $(inputId), dl = $(datalistId);
+      if (!inp || !dl) return;
+      const map = {};
+      dl.innerHTML = items.map(it => {
+        map[it.label.toUpperCase().trim()] = it.value;
+        return `<option value="${esc(it.label)}"></option>`;
+      }).join('');
+      Modals._comboMaps[inputId] = map;
+      const atual = selectedValue ? items.find(it => it.value === selectedValue) : null;
+      inp.value = atual ? atual.label : '';
+    },
+
+    _resolverCombo(inputId) {
+      const inp = $(inputId);
+      if (!inp) return '';
+      const map = Modals._comboMaps[inputId] || {};
+      return map[(inp.value || '').trim().toUpperCase()] || '';
+    },
+
     _editPostoId: null, // null = modo criação; string = modo edição
 
     // ── ABRIR TURNO ──────────────────────────────────────────
@@ -1227,6 +1279,21 @@ const NIT_EFETIVO = (() => {
       UI.toast('Operação adicionada!', 'success');
     },
 
+    // Lista combinada de agentes + viaturas, no formato do combo
+    _itemsRecursoViatura() {
+      const agentes = Object.entries(S.recursos)
+        .filter(([,r]) => r.status !== 'desligado')
+        .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'))
+        .map(([id,r]) => ({
+          value: `a:${id}`,
+          label: `${r.nome} · ${r.cargo||'—'} · ${upper(r.status||'')}`
+        }));
+      const vts = Object.entries(S.viaturas)
+        .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'))
+        .map(([id,v]) => ({ value: `v:${id}`, label: `🚓 ${v.nome||id}` }));
+      return [...agentes, ...vts];
+    },
+
     // ── ADICIONAR QRU/POSTO ──────────────────────────────────
     abrirAddPosto(opId) {
       $('posto-operacao-id').value = opId;
@@ -1241,24 +1308,9 @@ const NIT_EFETIVO = (() => {
       const ts = $('posto-tipo-acao');
       if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t => `<option>${t}</option>`).join('');
 
-      // Recursos + viaturas
-      const rs = $('posto-recurso-select');
-      if (rs) {
-        const agentes = Object.entries(S.recursos)
-          .filter(([,r]) => r.status !== 'desligado')
-          .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'));
-        const vts = Object.entries(S.viaturas);
-        rs.innerHTML =
-          `<option value="">— Selecionar agente ou viatura —</option>` +
-          agentes.map(([id,r]) =>
-            `<option value="a:${id}">${esc(r.nome)} · ${r.cargo||''} · ${upper(r.status||'')}</option>`
-          ).join('') +
-          (vts.length
-            ? `<optgroup label="── VIATURAS ──">` +
-              vts.map(([id,v]) => `<option value="v:${id}">${esc(v.nome||id)}</option>`).join('') +
-              `</optgroup>`
-            : '');
-      }
+      // Combo digitável de agente/viatura
+      Modals._montarCombo('posto-recurso-input', 'posto-recurso-datalist', Modals._itemsRecursoViatura());
+
       Modals._open('modal-add-posto');
     },
     fecharAddPosto() {
@@ -1288,22 +1340,12 @@ const NIT_EFETIVO = (() => {
       if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t =>
         `<option${t === posto.tipoAcao ? ' selected' : ''}>${t}</option>`).join('');
 
-      const rs = $('posto-recurso-select');
-      if (rs) {
-        const agentes = Object.entries(S.recursos)
-          .filter(([,r]) => r.status !== 'desligado')
-          .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'));
-        const vts = Object.entries(S.viaturas);
-        rs.innerHTML =
-          `<option value="">— Selecionar —</option>` +
-          agentes.map(([id,r]) =>
-            `<option value="a:${id}"${posto.alocacao?.id===id?' selected':''}>${esc(r.nome)} · ${r.cargo||''}</option>`
-          ).join('') +
-          (vts.length ? `<optgroup label="── VIATURAS ──">` +
-            vts.map(([id,v]) =>
-              `<option value="v:${id}"${posto.alocacao?.id===id?' selected':''}>${esc(v.nome||id)}</option>`
-            ).join('') + `</optgroup>` : '');
-      }
+      // Combo digitável — pré-seleciona o valor atual (a:id ou v:id)
+      const valorAtual = posto.alocacao?.id
+        ? `${posto.alocacao.tipo === 'viatura' ? 'v' : 'a'}:${posto.alocacao.id}`
+        : null;
+      Modals._montarCombo('posto-recurso-input', 'posto-recurso-datalist',
+        Modals._itemsRecursoViatura(), valorAtual);
 
       // Ajustar título e botão
       const h3  = document.querySelector('#modal-add-posto .modal-header h3');
@@ -1320,12 +1362,12 @@ const NIT_EFETIVO = (() => {
       const bairro  = $('posto-bairro')?.value.trim();
       const horario = $('posto-horario')?.value;
       const tipo    = $('posto-tipo-acao')?.value;
-      const recVal  = $('posto-recurso-select')?.value;
+      const recVal  = Modals._resolverCombo('posto-recurso-input');
       const obs     = $('posto-obs')?.value.trim();
       const qruP    = parseInt($('posto-qru-pessoas')?.value)||1;
 
       if (!local)  { UI.toast('Local é obrigatório','warning'); return; }
-      if (!recVal) { UI.toast('Selecione um agente ou viatura','warning'); return; }
+      if (!recVal) { UI.toast('Selecione um agente ou viatura válido da lista','warning'); return; }
 
       let alocacao;
       if (recVal.startsWith('v:')) {
@@ -1360,24 +1402,20 @@ const NIT_EFETIVO = (() => {
     // ── SUPERVISÃO ───────────────────────────────────────────
     abrirAddSupervisao() {
       if (!S.escalaAtiva) { UI.toast('Abra um turno primeiro','warning'); return; }
-      const sel = $('sup-recurso-select');
-      if (sel) {
-        const lista = Object.entries(S.recursos)
-          .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'));
-        sel.innerHTML = `<option value="">— Selecionar recurso —</option>` +
-          lista.map(([id,r]) =>
-            `<option value="${id}">${esc(r.nome)} · ${r.cargo||''}</option>`
-          ).join('');
-      }
+      const items = Object.entries(S.recursos)
+        .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'))
+        .map(([id,r]) => ({ value:id, label:`${r.nome} · ${r.cargo||'—'}` }));
+      Modals._montarCombo('sup-recurso-input', 'sup-recurso-datalist', items);
       Modals._open('modal-add-supervisao');
     },
     fecharAddSupervisao() { Modals._close('modal-add-supervisao'); },
     async confirmarAddSupervisao() {
-      const recId   = $('sup-recurso-select')?.value;
+      const recId   = Modals._resolverCombo('sup-recurso-input');
       const camada  = $('sup-camada')?.value;
       const funcao  = upper($('sup-funcao')?.value.trim());
       const contato = $('sup-contato')?.value.trim();
-      if (!recId||!camada) { UI.toast('Selecione recurso e função','warning'); return; }
+      if (!recId)   { UI.toast('Selecione um recurso válido da lista','warning'); return; }
+      if (!camada)  { UI.toast('Selecione a função','warning'); return; }
       await S.db.ref(`efetivo/escalas/${S.escalaAtiva}/supervisao/${camada}/${recId}`)
         .set({ funcao, contato });
       Modals.fecharAddSupervisao();
@@ -1504,20 +1542,19 @@ const NIT_EFETIVO = (() => {
       const nomeEl = $('vt-nome');
       if (nomeEl) nomeEl.value = v.nome || '';
 
-      // Selector de líder — todos os recursos ativos
-      const liderSel = $('vt-lider-select');
       const recursosOrdenados = Object.entries(S.recursos)
         .filter(([,r]) => r.status !== 'desligado')
         .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'));
-      if (liderSel) {
-        liderSel.innerHTML = `<option value="">— Selecionar líder/condutor —</option>` +
-          recursosOrdenados.map(([id,r]) =>
-            `<option value="${id}"${v.liderId===id?' selected':''}>${esc(r.nome)} · ${r.cargo||''}</option>`
-          ).join('');
-      }
+
+      // Combo digitável de líder
+      const itemsLider = recursosOrdenados.map(([id,r]) =>
+        ({ value:id, label:`${r.nome} · ${r.cargo||'—'}` }));
+      Modals._montarCombo('vt-lider-input', 'vt-lider-datalist', itemsLider, v.liderId || null);
 
       // Checklist de membros — todos os recursos, marcando os já vinculados
       const membrosCont = $('vt-membros-lista');
+      const filtroEl     = $('vt-membros-filtro');
+      if (filtroEl) filtroEl.value = '';
       if (membrosCont) {
         const membrosAtuais = v.membrosIds || {};
         membrosCont.innerHTML = recursosOrdenados.length
@@ -1535,11 +1572,19 @@ const NIT_EFETIVO = (() => {
       Modals._open('modal-cadastro-viatura');
     },
 
+    // Filtra a checklist de membros sem re-renderizar (evita perda de foco)
+    _filtrarMembros(termo) {
+      const t = (termo || '').toLowerCase().trim();
+      document.querySelectorAll('#vt-membros-lista .vt-membro-item').forEach(el => {
+        el.style.display = el.textContent.toLowerCase().includes(t) ? '' : 'none';
+      });
+    },
+
     async confirmarCadastroViatura() {
       const nome    = upper($('vt-nome')?.value.trim());
-      const liderId = $('vt-lider-select')?.value;
+      const liderId = Modals._resolverCombo('vt-lider-input');
       if (!nome)    { UI.toast('Nome da equipe é obrigatório','warning'); return; }
-      if (!liderId) { UI.toast('Selecione o líder/condutor','warning'); return; }
+      if (!liderId) { UI.toast('Selecione um líder válido da lista','warning'); return; }
 
       const membrosIds = {};
       document.querySelectorAll('#vt-membros-lista input[type=checkbox]:checked')
