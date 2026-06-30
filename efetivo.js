@@ -1170,30 +1170,117 @@ const NIT_EFETIVO = (() => {
     },
     _onOverlayClick(e, id) { if (e.target.id === id) Modals._close(id); },
 
-    // ── COMBO DIGITÁVEL (input + datalist) ────────────────────
-    // Substitui <select> simples por campo de texto com sugestões nativas.
-    // Permite digitar para filtrar — essencial quando a lista de recursos
-    // cresce além de 10-15 itens (rolar um select fechado não escala).
-    _comboMaps: {}, // { inputId: { "LABEL EM CAIXA ALTA": valorResolvido } }
+    // ── COMBOBOX DIGITÁVEL (JS puro, sem <datalist>) ───────────
+    // <datalist> tem suporte fraco/inexistente no Safari iOS e é
+    // inconsistente em vários navegadores mobile — por isso não é usado.
+    // Este combobox próprio funciona igual em qualquer navegador.
+    // Renderiza no máximo 8 sugestões por vez, então escala bem mesmo
+    // com centenas de recursos cadastrados (200+ não é problema aqui).
+    _comboData: {}, // { inputId: { items:[{value,label}], value: string|null } }
 
-    _montarCombo(inputId, datalistId, items, selectedValue = null) {
-      const inp = $(inputId), dl = $(datalistId);
-      if (!inp || !dl) return;
-      const map = {};
-      dl.innerHTML = items.map(it => {
-        map[it.label.toUpperCase().trim()] = it.value;
-        return `<option value="${esc(it.label)}"></option>`;
-      }).join('');
-      Modals._comboMaps[inputId] = map;
+    _montarCombo(inputId, listId, items, selectedValue = null) {
+      const inp = $(inputId), list = $(listId);
+      if (!inp || !list) return;
+      Modals._comboData[inputId] = { items, value: selectedValue };
+
       const atual = selectedValue ? items.find(it => it.value === selectedValue) : null;
       inp.value = atual ? atual.label : '';
+      list.innerHTML = '';
+      list.classList.remove('open');
+
+      // Liga os listeners apenas uma vez por elemento (input persiste entre aberturas do modal)
+      if (!inp._comboBound) {
+        inp._comboBound = true;
+        inp.addEventListener('input', () => Modals._filtrarCombo(inputId, listId));
+        inp.addEventListener('focus', () => Modals._filtrarCombo(inputId, listId));
+        inp.addEventListener('blur', () => {
+          // Atraso para o clique no item (mousedown) registrar antes do dropdown fechar
+          setTimeout(() => { const l = $(listId); if (l) l.classList.remove('open'); }, 150);
+        });
+      }
+    },
+
+    // Posiciona o dropdown com position:fixed baseado na posição real do input.
+    // Necessário porque o modal tem rolagem própria (overflow-y:auto) — um
+    // dropdown position:absolute comum seria cortado na borda do modal.
+    _posicionarCombo(inp, list) {
+      const r = inp.getBoundingClientRect();
+      list.style.position = 'fixed';
+      list.style.top      = `${r.bottom + 4}px`;
+      list.style.left     = `${r.left}px`;
+      list.style.width    = `${r.width}px`;
+    },
+
+    _reposicionarCombosAbertos() {
+      document.querySelectorAll('.combo-list.open').forEach(list => {
+        const inp = $(list.id.replace('-list', '-input'));
+        if (inp) Modals._posicionarCombo(inp, list);
+      });
+    },
+
+    _filtrarCombo(inputId, listId) {
+      const inp = $(inputId), list = $(listId);
+      const data = Modals._comboData[inputId];
+      if (!inp || !list || !data) return;
+
+      const termo = inp.value.trim().toLowerCase();
+      const filtrados = termo
+        ? data.items.filter(it => it.label.toLowerCase().includes(termo))
+        : data.items;
+      const visiveis = filtrados.slice(0, 8); // teto fixo — rápido mesmo com listas grandes
+
+      if (!visiveis.length) {
+        list.innerHTML = `<div class="combo-empty">Nenhum resultado</div>`;
+      } else {
+        list.innerHTML = visiveis.map(it => `
+          <div class="combo-item" onmousedown="NIT_EFETIVO.Modals._selecionarCombo('${inputId}','${listId}','${it.value}')">
+            ${Modals._destacar(it.label, termo)}
+          </div>`).join('') +
+          (filtrados.length > visiveis.length
+            ? `<div class="combo-mais">+ ${filtrados.length - visiveis.length} resultado(s) — refine a busca</div>`
+            : '');
+      }
+      Modals._posicionarCombo(inp, list);
+      list.classList.add('open');
+
+      // Registra listeners globais de reposição apenas uma vez
+      if (!Modals._comboReposBound) {
+        Modals._comboReposBound = true;
+        window.addEventListener('scroll', Modals._reposicionarCombosAbertos, true);
+        window.addEventListener('resize', Modals._reposicionarCombosAbertos);
+      }
+    },
+
+    _destacar(label, termo) {
+      if (!termo) return esc(label);
+      const idx = label.toLowerCase().indexOf(termo);
+      if (idx === -1) return esc(label);
+      return esc(label.slice(0, idx)) +
+        `<mark>${esc(label.slice(idx, idx + termo.length))}</mark>` +
+        esc(label.slice(idx + termo.length));
+    },
+
+    _selecionarCombo(inputId, listId, value) {
+      const inp = $(inputId), list = $(listId);
+      const data = Modals._comboData[inputId];
+      const item = data?.items.find(it => it.value === value);
+      if (!inp || !item) return;
+      inp.value = item.label;
+      data.value = value;
+      if (list) list.classList.remove('open');
     },
 
     _resolverCombo(inputId) {
       const inp = $(inputId);
-      if (!inp) return '';
-      const map = Modals._comboMaps[inputId] || {};
-      return map[(inp.value || '').trim().toUpperCase()] || '';
+      const data = Modals._comboData[inputId];
+      if (!inp || !data) return '';
+      // Caso normal: usuário clicou em um item da lista
+      const atual = data.items.find(it => it.value === data.value);
+      if (atual && atual.label === inp.value) return data.value;
+      // Fallback: usuário digitou o texto exato sem clicar (ex: autofill, colar)
+      const exato = data.items.find(it =>
+        it.label.toLowerCase() === inp.value.trim().toLowerCase());
+      return exato ? exato.value : '';
     },
 
     _editPostoId: null, // null = modo criação; string = modo edição
@@ -1228,7 +1315,10 @@ const NIT_EFETIVO = (() => {
       const fim   = $('nova-escala-fim')?.value;
       if (!turno||!data||!ini||!fim) { UI.toast('Preencha todos os campos','warning'); return; }
       const cfg   = CFG.TURNOS[turno] || {};
-      const label = `${cfg.label||upper(turno)} ${ini}–${fim}`;
+      // Label = apenas o nome do turno. O horário é exibido separadamente
+      // (cabeçalho da escala, badge do Modo Campo, rodapé do Modo Campo) —
+      // embuti-lo aqui também causava duplicação visual ("MANHÃ 05:30–11:30 · ... 05:30–11:30").
+      const label = cfg.label || upper(turno);
       await DB.criarEscala({ turno, data, horarioInicio:ini, horarioFim:fim, label });
       Modals.fecharCriarEscala();
       UI.toast('Turno aberto!', 'success');
@@ -1309,7 +1399,7 @@ const NIT_EFETIVO = (() => {
       if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t => `<option>${t}</option>`).join('');
 
       // Combo digitável de agente/viatura
-      Modals._montarCombo('posto-recurso-input', 'posto-recurso-datalist', Modals._itemsRecursoViatura());
+      Modals._montarCombo('posto-recurso-input', 'posto-recurso-list', Modals._itemsRecursoViatura());
 
       Modals._open('modal-add-posto');
     },
@@ -1344,7 +1434,7 @@ const NIT_EFETIVO = (() => {
       const valorAtual = posto.alocacao?.id
         ? `${posto.alocacao.tipo === 'viatura' ? 'v' : 'a'}:${posto.alocacao.id}`
         : null;
-      Modals._montarCombo('posto-recurso-input', 'posto-recurso-datalist',
+      Modals._montarCombo('posto-recurso-input', 'posto-recurso-list',
         Modals._itemsRecursoViatura(), valorAtual);
 
       // Ajustar título e botão
@@ -1405,7 +1495,7 @@ const NIT_EFETIVO = (() => {
       const items = Object.entries(S.recursos)
         .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'))
         .map(([id,r]) => ({ value:id, label:`${r.nome} · ${r.cargo||'—'}` }));
-      Modals._montarCombo('sup-recurso-input', 'sup-recurso-datalist', items);
+      Modals._montarCombo('sup-recurso-input', 'sup-recurso-list', items);
       Modals._open('modal-add-supervisao');
     },
     fecharAddSupervisao() { Modals._close('modal-add-supervisao'); },
@@ -1549,7 +1639,7 @@ const NIT_EFETIVO = (() => {
       // Combo digitável de líder
       const itemsLider = recursosOrdenados.map(([id,r]) =>
         ({ value:id, label:`${r.nome} · ${r.cargo||'—'}` }));
-      Modals._montarCombo('vt-lider-input', 'vt-lider-datalist', itemsLider, v.liderId || null);
+      Modals._montarCombo('vt-lider-input', 'vt-lider-list', itemsLider, v.liderId || null);
 
       // Checklist de membros — todos os recursos, marcando os já vinculados
       const membrosCont = $('vt-membros-lista');
