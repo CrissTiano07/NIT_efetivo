@@ -35,7 +35,48 @@ const NIT_EFETIVO = (() => {
     STATUS_RECURSO: ['disponivel','escalado','ausente','afastado','desligado'],
     STATUS_COLORS: { disponivel:'success', escalado:'accent', ausente:'warning',
                       afastado:'muted', desligado:'danger' },
-    CARGOS: ['SUPERVISOR','AUXILIAR','MOTOCICLISTA','MONITOR','ORIENTADOR']
+    CARGOS: ['SUPERVISOR','AUXILIAR','MOTOCICLISTA','MONITOR','ORIENTADOR'],
+
+    // 17 categorias do modelo oficial de Relatório Mensal da AMC —
+    // nomes exatamente como as abas do arquivo original, pois é isso
+    // que determina o roteamento de cada QRU pro relatório certo.
+    TIPOS_MISSAO: [
+      'CONTROLE DE TRAFEGO', 'OPERAÇÃO SEMAFORICA', 'APOIO A OBRA',
+      'RESERVA DE VAGAS', 'OPER CICLOFAIXA DO LAZER', 'COLISÃO SEM VITIMA',
+      'APOIO AO JOGO', 'APOIO A EVENTO', 'APOIO A OUTROS ORGÃOS',
+      'FIOS CAIDOS NA VIA', 'POSTE CAIDO NA VIA', 'MANIFESTAÇÃO',
+      'APOIO A PODA', 'INCENDIO', 'ARVORE CAIDA NA VIA',
+      'DILIGENCIA', 'OLEO NA PISTA'
+    ],
+
+    // 106 bairros oficiais — extraídos do modelo original (aba BAIRROS).
+    // QRUs com bairro fora desta lista caem num bucket separado no
+    // relatório ("BAIRRO NÃO RECONHECIDO"), sem perder dado nenhum.
+    BAIRROS_OFICIAL: [
+      'AEROLANDIA','AEROPORTO','ALDEOTA','ALVARO WEYNE','ANCURI','ALTO ALEGRE',
+      'ANTONIO BEZERRA','ARACAPÉ','AUTRAN NUNES','BARRA DO CEARÁ','BARROSO',
+      'BELA VISTA','BENFICA','BOM FUTURO','BOM JARDIM','BONSUCESSO',
+      'CAIS DO PORTO','CAJAZEIRAS','CAMBEBA','CANINDEZINHO','CARLITO PAMPLONA',
+      'CASTELÃO','CENTRO','CIDADE 2000','CIDADE DOS FUNCIONARIOS','COAÇU',
+      'COCÓ','CONJUNTO CEARÁ','CONJUNTO ESPERANÇA','CONJUNTO PALMEIRAS',
+      'COUTO FERNANDES','CRISTO REDENTOR','CURIÓ','DAMAS','DEMOCRITO ROCHA',
+      'DIAS MACEDO','DIONISIO TORRES','DOM LUSTOSA','EDSON QUEIROZ',
+      'FARIAS BRITO','FATIMA','FLORESTA','GENIBAU','GRANJA LISBOA',
+      'GRANJA PORTUGAL','GUAJIRU','GUARARAPES','HENRIQUE JORGE','ITAOCA',
+      'ITAPERI','JACARECANGA','JANGURUSSU','JARDIM AMERICA','JARDIM IRACEMA',
+      'JOAO XXIII','JOAQUIM TAVORA','JOQUEI CLUBE','JOSÉ DE ALENCAR',
+      'JOSÉ BONIFACIO','JOSE WALTER','LAGOA REDONDA','LUCIANO CAVALCANTE',
+      'MARAPONGA','MEIRELES','MESSEJANA','MONDUBIM','MONTE CASTELO','MONTESE',
+      'MOURA BRASIL','MUCURIPE','OTAVIO BONFIM','PADRE ANDRADE','PANAMERICANO',
+      'PAPICU','PARANGABA','PARREÃO','PARQUE ARAXÁ','PARQUE MANIBURA',
+      'PARQUE SANTA ROSA','PARQUE DOIS IRMÃOS','PARQUE SANTA MARIA',
+      'PARQUELANDIA','PASSARÉ','PAUPINA','PEDRAS','PIRAMBU',
+      'PLANALTO AIRTON SENNA','PRAIA DE IRACEMA','PRAIA DO FUTURO',
+      'PRESIDENTE KENNEDY','QUINTINO CUNHA','RODOLFO TEOFILO','SALINAS',
+      'SÃO CRISTOVÃO','SÃO GERARDO','SÃO JOÃO DO TAUAPE','SAPIRANGA',
+      'SERRINHA','SIQUEIRA','VARJOTA','VICENTE PIZON','VILA ELLERY',
+      'VILA MANUEL SATIRO','VILA PERY','VILA UNIÃO','VILA VELHA'
+    ]
   };
 
   // ═══════════════════════════════════════════════════════════════
@@ -149,6 +190,21 @@ const NIT_EFETIVO = (() => {
 
   function contarPorStatus(status) {
     return Object.values(S.recursos).filter(r => r.status === status).length;
+  }
+
+  // O modelo de Relatório Mensal só tem 3 colunas de turno (Manhã/Tarde/
+  // Noite) — não existe coluna para turnos "especial". Para não perder
+  // dado, um turno especial é encaixado na coluna mais próxima pelo
+  // horário real de início (ex: Corrida Sefaz às 05:00h cai em Manhã).
+  function turnoColuna(escala) {
+    if (escala.turno === 'manha' || escala.turno === 'tarde' || escala.turno === 'noite') {
+      return escala.turno;
+    }
+    const ini = horaParaMinutos(escala.horarioInicio);
+    if (ini === null) return 'manha';
+    if (ini < CFG.TURNOS.tarde.minI) return 'manha';
+    if (ini < CFG.TURNOS.noite.minI) return 'tarde';
+    return 'noite';
   }
 
   function debounce(fn, delay) {
@@ -459,9 +515,10 @@ const NIT_EFETIVO = (() => {
       const tmpl = S.templates[templateId];
       if (!tmpl) return;
       const opId = await DB.adicionarOperacao(escalaId, {
-        nome:    tmpl.nome,
-        bairro:  tmpl.bairro  || '',
-        horario: tmpl.horario || '',
+        nome:       tmpl.nome,
+        bairro:     tmpl.bairro     || '',
+        horario:    tmpl.horario    || '',
+        tipoMissao: tmpl.tipoMissao || 'NÃO CLASSIFICADO',
         templateId
       });
       // Número calculado uma única vez e incrementado em memória — ler
@@ -511,6 +568,43 @@ const NIT_EFETIVO = (() => {
       });
       Log.write('recurso_cadastrado', ref.key, { nome:dados.nome, matricula:dados.matricula });
       return ref.key;
+    },
+
+    // ── RELATÓRIO MENSAL — sem backend, lê o Firebase direto ────
+    // Firebase não tem busca por prefixo de string; mas datas em
+    // formato ISO "YYYY-MM-DD" ordenam lexicograficamente igual a
+    // ordenação cronológica, então um range startAt/endAt funciona
+    // como filtro de mês sem precisar de índice especial.
+    async buscarDadosRelatorioMensal(anoMes) {
+      const escSnap = await S.db.ref('efetivo/escalas')
+        .orderByChild('data')
+        .startAt(`${anoMes}-01`)
+        .endAt(`${anoMes}-31`)
+        .once('value');
+      const escalas = escSnap.val() || {};
+
+      const linhas = [];
+      for (const [escalaId, esc] of Object.entries(escalas)) {
+        const [opSnap, postoSnap] = await Promise.all([
+          S.db.ref('efetivo/operacoes').orderByChild('escalaId').equalTo(escalaId).once('value'),
+          S.db.ref('efetivo/postos').orderByChild('escalaId').equalTo(escalaId).once('value')
+        ]);
+        const operacoes = opSnap.val()    || {};
+        const postos    = postoSnap.val() || {};
+
+        for (const posto of Object.values(postos)) {
+          const op = operacoes[posto.operacaoId] || {};
+          linhas.push({
+            dia:        parseInt((esc.data||'').split('-')[2], 10) || 0,
+            turno:      turnoColuna(esc), // manha/tarde/noite — especial é encaixado por horário
+            tipoMissao: op.tipoMissao || 'NÃO CLASSIFICADO',
+            bairro:     upper((posto.bairro || op.bairro || '').trim()) || '—',
+            local:      posto.local || '—',
+            pessoas:    posto.qruPessoas || 1
+          });
+        }
+      }
+      return linhas;
     },
 
     // ── EQUIPES / VIATURAS — entidade persistente, independente de turno ──
@@ -866,6 +960,9 @@ const NIT_EFETIVO = (() => {
         <div class="bloco-titulo operacao-titulo">
           ${op.bairro ? `<span class="op-bairro">${upper(op.bairro)}</span>` : ''}
           <span class="op-nome">${esc(op.nome)}</span>
+          ${op.tipoMissao
+            ? `<span class="badge badge-accent">${esc(op.tipoMissao)}</span>`
+            : `<span class="badge badge-warning" title="Operação criada antes do campo Tipo de Missão existir — não entra corretamente no Relatório Mensal">⚠ NÃO CLASSIFICADO</span>`}
           ${op.horario ? `
             <span class="op-horario${horarioAlerta ? ' op-horario-alerta' : ''}"
               ${horarioAlerta ? `title="Fora da janela do turno (${esc(escala?.horarioInicio)}–${esc(escala?.horarioFim)})"` : ''}>
@@ -1109,6 +1206,7 @@ const NIT_EFETIVO = (() => {
           <div class="template-header">
             <div class="template-info">
               <span class="template-nome">${esc(t.nome)}</span>
+              ${t.tipoMissao ? `<span class="badge badge-accent">${esc(t.tipoMissao)}</span>` : ''}
               ${t.bairro ? `<span class="template-bairro">${upper(t.bairro)}</span>` : ''}
               ${t.horario ? `<span class="template-horario">${t.horario}h</span>` : ''}
               <span class="op-count">${nPostos} posto${nPostos!==1?'s':''} padrão</span>
@@ -1446,12 +1544,15 @@ const NIT_EFETIVO = (() => {
           tmplSection.style.display = 'none';
         }
       }
+      const tipoSel = $('op-tipo-missao');
+      if (tipoSel) tipoSel.innerHTML = `<option value="">— Selecionar —</option>` +
+        CFG.TIPOS_MISSAO.map(t => `<option>${t}</option>`).join('');
       Modals._open('modal-add-operacao');
     },
     fecharAddOperacao() { Modals._close('modal-add-operacao'); },
     async confirmarAddOperacao() {
       const templateId = $('op-template-select')?.value || '';
-      // Com template: aplica diretamente
+      // Com template: aplica diretamente (tipo de missão já vem do template)
       if (templateId) {
         await DB.aplicarTemplate(templateId, S.escalaAtiva);
         Modals.fecharAddOperacao();
@@ -1460,12 +1561,14 @@ const NIT_EFETIVO = (() => {
         return;
       }
       // Sem template: operação manual
-      const nome   = $('op-nome')?.value.trim();
-      const bairro = $('op-bairro')?.value.trim();
-      const hor    = $('op-horario')?.value;
+      const nome       = $('op-nome')?.value.trim();
+      const bairro     = $('op-bairro')?.value.trim();
+      const hor        = $('op-horario')?.value;
+      const tipoMissao = $('op-tipo-missao')?.value;
       if (!nome) { UI.toast('Nome é obrigatório','warning'); return; }
+      if (!tipoMissao) { UI.toast('Selecione o tipo de missão — usado no Relatório Mensal','warning'); return; }
       await DB.adicionarOperacao(S.escalaAtiva, {
-        nome:upper(nome), bairro:upper(bairro), horario:hor
+        nome:upper(nome), bairro:upper(bairro), horario:hor, tipoMissao
       });
       Modals.fecharAddOperacao();
       UI.toast('Operação adicionada!', 'success');
@@ -1632,9 +1735,15 @@ const NIT_EFETIVO = (() => {
       const nomeEl   = $('tmpl-nome');
       const bairroEl = $('tmpl-bairro');
       const horEl    = $('tmpl-horario');
+      const tipoEl   = $('tmpl-tipo-missao');
       if (nomeEl)   nomeEl.value   = t.nome    || '';
       if (bairroEl) bairroEl.value = t.bairro  || '';
       if (horEl)    horEl.value    = t.horario || '';
+      if (tipoEl) {
+        tipoEl.innerHTML = `<option value="">— Selecionar —</option>` +
+          CFG.TIPOS_MISSAO.map(ti =>
+            `<option${ti===t.tipoMissao?' selected':''}>${ti}</option>`).join('');
+      }
 
       const h3 = document.querySelector('#modal-criar-template .modal-header h3');
       if (h3) h3.textContent = templateId ? 'EDITAR TEMPLATE' : 'NOVO TEMPLATE';
@@ -1679,18 +1788,203 @@ const NIT_EFETIVO = (() => {
     },
 
     async confirmarCriarTemplate() {
-      const nome   = upper($('tmpl-nome')?.value.trim());
-      const bairro = upper($('tmpl-bairro')?.value.trim());
-      const hor    = $('tmpl-horario')?.value;
+      const nome       = upper($('tmpl-nome')?.value.trim());
+      const bairro     = upper($('tmpl-bairro')?.value.trim());
+      const hor        = $('tmpl-horario')?.value;
+      const tipoMissao = $('tmpl-tipo-missao')?.value;
       if (!nome) { UI.toast('Nome do template é obrigatório','warning'); return; }
+      if (!tipoMissao) { UI.toast('Selecione o tipo de missão — usado no Relatório Mensal','warning'); return; }
       const postosValidos = Modals._tmplPostos.filter(p => p.local.trim());
       if (!postosValidos.length) { UI.toast('Adicione ao menos um posto','warning'); return; }
       await DB.salvarTemplate(
-        { nome, bairro, horario:hor, postosPadrao: postosValidos },
+        { nome, bairro, horario:hor, tipoMissao, postosPadrao: postosValidos },
         Modals._editTemplateId
       );
       Modals.fecharCriarTemplate();
       UI.toast(Modals._editTemplateId ? 'Template atualizado!' : 'Template criado!', 'success');
+    },
+
+    // ── RELATÓRIO MENSAL ─────────────────────────────────────
+    abrirRelatorioMensal() {
+      const mesEl = $('relatorio-mes');
+      if (mesEl) mesEl.value = getDataHoje().slice(0, 7); // "YYYY-MM" do mês atual
+      const statusEl = $('relatorio-status');
+      if (statusEl) {
+        statusEl.className = 'relatorio-status hidden';
+        statusEl.textContent = '';
+      }
+      Modals._open('modal-relatorio-mensal');
+    },
+    fecharRelatorioMensal() { Modals._close('modal-relatorio-mensal'); },
+
+    async confirmarRelatorioMensal() {
+      const anoMes   = $('relatorio-mes')?.value;
+      const statusEl = $('relatorio-status');
+      if (!anoMes) { UI.toast('Selecione o mês','warning'); return; }
+      if (typeof XLSX === 'undefined') {
+        UI.toast('Biblioteca de planilha não carregou — verifique a conexão.', 'danger');
+        return;
+      }
+
+      statusEl.className = 'relatorio-status';
+      statusEl.textContent = 'Buscando dados no Firebase...';
+
+      try {
+        const linhas = await DB.buscarDadosRelatorioMensal(anoMes);
+        if (!linhas.length) {
+          statusEl.className = 'relatorio-status relatorio-erro';
+          statusEl.textContent = 'Nenhum QRU encontrado para este mês.';
+          return;
+        }
+        Modals._gerarXlsxRelatorio(anoMes, linhas);
+        statusEl.className = 'relatorio-status relatorio-sucesso';
+        statusEl.textContent = `Relatório gerado! ${linhas.length} QRU(s) no mês.`;
+        Log.write('relatorio_mensal_gerado', null, { anoMes, totalQrus: linhas.length });
+      } catch (e) {
+        console.error('[relatorio mensal]', e);
+        statusEl.className = 'relatorio-status relatorio-erro';
+        statusEl.textContent = 'Erro ao gerar relatório. Tente novamente.';
+      }
+    },
+
+    // Monta o workbook (4 abas) e dispara o download — tudo no navegador.
+    // Monta uma aba de tipo de missão no layout exato do modelo oficial:
+    // 3 blocos de turno (Manhã/Tarde/Noite), cada dia do mês com um
+    // bloco de linhas para endereço+orientadores. O modelo original
+    // reserva 3 linhas por dia; aqui o bloco cresce automaticamente se
+    // houver mais de 3 QRUs no mesmo dia/turno, pra nunca perder dado.
+    // Valores são gravados como números finais (não fórmulas) — é
+    // mais simples, abre igual em Excel/Sheets/LibreOffice sem
+    // depender de recálculo, e o relatório já é gerado a partir de
+    // dados fechados, não preenchido manualmente ao longo do mês.
+    _construirAbaTipoMissao(linhasDoTipo) {
+      const aoa = [];
+      aoa.push(['TURNO MANHÃ','','','','TURNO TARDE','','','','TURNO NOITE','','','','']);
+      aoa.push(['DIA','ENDEREÇO','QUANTIDADE DE ORIENTADORES','','DIA','ENDEREÇO','QUANTIDADE DE ORIENTADORES','','DIA','ENDEREÇO','QUANTIDADE DE ORIENTADORES','','']);
+
+      const porDia = {};
+      for (let d = 1; d <= 31; d++) porDia[d] = { manha:[], tarde:[], noite:[] };
+      linhasDoTipo.forEach(l => {
+        if (porDia[l.dia] && porDia[l.dia][l.turno]) porDia[l.dia][l.turno].push(l);
+      });
+
+      let totalManha = 0, totalTarde = 0, totalNoite = 0;
+      let totalQrus  = 0, totalOrientadores = 0;
+
+      for (let d = 1; d <= 31; d++) {
+        const m = porDia[d].manha, t = porDia[d].tarde, n = porDia[d].noite;
+        const linhasNecessarias = Math.max(3, m.length, t.length, n.length);
+        const qtdDia = m.length + t.length + n.length;
+
+        for (let i = 0; i < linhasNecessarias; i++) {
+          const row = new Array(13).fill('');
+          if (i === 0) { row[0] = d; row[4] = d; row[8] = d; row[12] = 'QUANT POR DIA'; }
+          if (i === 1) { row[12] = qtdDia; }
+          if (m[i]) { row[1] = m[i].local; row[2] = m[i].pessoas; }
+          if (t[i]) { row[5] = t[i].local; row[6] = t[i].pessoas; }
+          if (n[i]) { row[9] = n[i].local; row[10] = n[i].pessoas; }
+          aoa.push(row);
+        }
+
+        totalManha += m.length; totalTarde += t.length; totalNoite += n.length;
+        totalQrus  += qtdDia;
+        [...m, ...t, ...n].forEach(l => { totalOrientadores += l.pessoas; });
+      }
+
+      aoa.push(['','QUANT POR TURNO','','','','QUANT POR TURNO','','','','QUANT POR TURNO','','','QUANTIDADE TOTAL DE QRUS']);
+      aoa.push(['',totalManha,'','','',totalTarde,'','','',totalNoite,'','',totalQrus]);
+      aoa.push(['','','','','','','','','','','','','QUANTIDADE TOTAL DE ORIENTADORES']);
+      aoa.push(['','','','','','','','','','','','',totalOrientadores]);
+
+      return { ws: XLSX.utils.aoa_to_sheet(aoa), totalQrus, totalOrientadores };
+    },
+
+    // Aba TOTAL — rollup de QRUs e orientadores por tipo de missão
+    _construirAbaTotal(totaisPorTipo) {
+      const aoa = [
+        [],
+        ['OCORRÊNCIAS ATENDIDAS TOTAL NO MÊS'],
+        ['TIPO', 'QUANT QRU', 'ORIENTADORES']
+      ];
+      CFG.TIPOS_MISSAO.forEach(tipo => {
+        const v = totaisPorTipo[tipo] || { qrus: 0, orientadores: 0 };
+        aoa.push([tipo, v.qrus, v.orientadores]);
+      });
+      if (totaisPorTipo['NÃO CLASSIFICADO']) {
+        aoa.push(['NÃO CLASSIFICADO (operações criadas antes do campo existir)',
+          totaisPorTipo['NÃO CLASSIFICADO'].qrus, totaisPorTipo['NÃO CLASSIFICADO'].orientadores]);
+      }
+      return XLSX.utils.aoa_to_sheet(aoa);
+    },
+
+    // Aba BAIRROS — matriz bairro × tipo de missão (quantidade de QRUs).
+    // Bairros fora da lista oficial (digitados livremente pelo supervisor
+    // e que não batem com nenhum dos 106 nomes oficiais) caem num bucket
+    // "BAIRRO NÃO RECONHECIDO" no fim, sem perder dado.
+    _construirAbaBairros(linhas) {
+      const porBairroTipo = {};
+      const bairrosExtras = new Set();
+      linhas.forEach(l => {
+        const reconhecido = CFG.BAIRROS_OFICIAL.includes(l.bairro);
+        const chave = reconhecido ? l.bairro : 'BAIRRO NÃO RECONHECIDO';
+        if (!reconhecido) bairrosExtras.add(l.bairro);
+        porBairroTipo[chave] = porBairroTipo[chave] || {};
+        porBairroTipo[chave][l.tipoMissao] = (porBairroTipo[chave][l.tipoMissao] || 0) + 1;
+      });
+
+      const header = ['BAIRRO', ...CFG.TIPOS_MISSAO, 'TOTAL'];
+      const aoa = [header];
+      CFG.BAIRROS_OFICIAL.forEach(bairro => {
+        const dadosBairro = porBairroTipo[bairro] || {};
+        let total = 0;
+        const linha = [bairro, ...CFG.TIPOS_MISSAO.map(tipo => {
+          const v = dadosBairro[tipo] || 0;
+          total += v;
+          return v;
+        })];
+        linha.push(total);
+        aoa.push(linha);
+      });
+      if (bairrosExtras.size) {
+        const dadosExtra = porBairroTipo['BAIRRO NÃO RECONHECIDO'] || {};
+        let total = 0;
+        const linha = [`NÃO RECONHECIDO (${[...bairrosExtras].join(', ')})`,
+          ...CFG.TIPOS_MISSAO.map(tipo => {
+            const v = dadosExtra[tipo] || 0;
+            total += v;
+            return v;
+          })];
+        linha.push(total);
+        aoa.push(linha);
+      }
+      return XLSX.utils.aoa_to_sheet(aoa);
+    },
+
+    _gerarXlsxRelatorio(anoMes, linhas) {
+      const wb = XLSX.utils.book_new();
+      const totaisPorTipo = {};
+
+      // Uma aba por tipo de missão, na ordem oficial do modelo
+      CFG.TIPOS_MISSAO.forEach(tipo => {
+        const linhasDoTipo = linhas.filter(l => l.tipoMissao === tipo);
+        const { ws, totalQrus, totalOrientadores } = Modals._construirAbaTipoMissao(linhasDoTipo);
+        totaisPorTipo[tipo] = { qrus: totalQrus, orientadores: totalOrientadores };
+        // Nome de aba do Excel tem limite de 31 caracteres
+        XLSX.utils.book_append_sheet(wb, ws, tipo.slice(0, 31));
+      });
+
+      // Dados sem tipo de missão (operações criadas antes do campo existir)
+      const naoClassificadas = linhas.filter(l => l.tipoMissao === 'NÃO CLASSIFICADO');
+      if (naoClassificadas.length) {
+        const { ws, totalQrus, totalOrientadores } = Modals._construirAbaTipoMissao(naoClassificadas);
+        totaisPorTipo['NÃO CLASSIFICADO'] = { qrus: totalQrus, orientadores: totalOrientadores };
+        XLSX.utils.book_append_sheet(wb, ws, 'NÃO CLASSIFICADO');
+      }
+
+      XLSX.utils.book_append_sheet(wb, Modals._construirAbaTotal(totaisPorTipo), 'TOTAL');
+      XLSX.utils.book_append_sheet(wb, Modals._construirAbaBairros(linhas), 'BAIRROS');
+
+      XLSX.writeFile(wb, `NIT_Efetivo_Relatorio_${anoMes}.xlsx`);
     },
 
     // ── CADASTRAR RECURSO ─────────────────────────────────────
