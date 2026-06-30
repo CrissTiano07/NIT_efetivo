@@ -361,9 +361,11 @@
       <select id="posto-tipo-acao" class="select-field"></select>
 
       <label class="form-label">Agente / Viatura *</label>
-      <input id="posto-recurso-input" type="text" class="input-field" list="posto-recurso-datalist"
-        placeholder="Digite o nome do agente ou da equipe..." autocomplete="off">
-      <datalist id="posto-recurso-datalist"></datalist>
+      <div class="combo-wrap">
+        <input id="posto-recurso-input" type="text" class="input-field"
+          placeholder="Digite o nome do agente ou da equipe..." autocomplete="off">
+        <div id="posto-recurso-list" class="combo-list"></div>
+      </div>
 
       <label class="form-label">Pessoas neste QRU</label>
       <input id="posto-qru-pessoas" type="number" class="input-field" value="1" min="1" max="20">
@@ -450,9 +452,11 @@
       <input id="vt-nome" type="text" class="input-field" placeholder="Ex: EQUIPE NONATO" autocomplete="off">
 
       <label class="form-label">Líder / Condutor *</label>
-      <input id="vt-lider-input" type="text" class="input-field" list="vt-lider-datalist"
-        placeholder="Digite o nome do líder..." autocomplete="off">
-      <datalist id="vt-lider-datalist"></datalist>
+      <div class="combo-wrap">
+        <input id="vt-lider-input" type="text" class="input-field"
+          placeholder="Digite o nome do líder..." autocomplete="off">
+        <div id="vt-lider-list" class="combo-list"></div>
+      </div>
 
       <label class="form-label">Tripulantes / Membros</label>
       <input id="vt-membros-filtro" type="text" class="input-field" style="margin-bottom:8px"
@@ -480,9 +484,11 @@
     </div>
     <div class="modal-body">
       <label class="form-label">Recurso *</label>
-      <input id="sup-recurso-input" type="text" class="input-field" list="sup-recurso-datalist"
-        placeholder="Digite o nome do recurso..." autocomplete="off">
-      <datalist id="sup-recurso-datalist"></datalist>
+      <div class="combo-wrap">
+        <input id="sup-recurso-input" type="text" class="input-field"
+          placeholder="Digite o nome do recurso..." autocomplete="off">
+        <div id="sup-recurso-list" class="combo-list"></div>
+      </div>
 
       <label class="form-label">Função na supervisão</label>
       <select id="sup-camada" class="select-field">
