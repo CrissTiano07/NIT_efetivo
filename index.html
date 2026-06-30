@@ -121,6 +121,9 @@
       <div id="relogio-dash" class="nav-relogio">--:--:--</div>
     </div>
     <div class="nav-right">
+      <a href="?modo=campo" target="_blank" class="nav-campo-link" title="Abrir Modo Campo em nova aba (como o agente vê)">
+        🔍 Modo Campo ↗
+      </a>
       <span id="conexao-status" class="status-indicator">
         <span class="status-dot" id="conexao-dot"></span>
         <span id="conexao-label">Conectando...</span>
@@ -148,6 +151,10 @@
     <button class="tab-btn" data-tab="metricas" role="tab"
       onclick="NIT_EFETIVO.UI.switchTab('metricas'); NIT_EFETIVO.UI.renderMetricas()">
       📊 TELEMETRIA
+    </button>
+    <button class="tab-btn" data-tab="relatorio" role="tab"
+      onclick="NIT_EFETIVO.UI.switchTab('relatorio'); NIT_EFETIVO.UI.renderRelatorioTab()">
+      📑 RELATÓRIO
     </button>
     <button class="tab-btn" data-tab="campo-preview" role="tab"
       onclick="NIT_EFETIVO.UI.switchTab('campo-preview')">
@@ -192,7 +199,13 @@
   <!-- TAB: MÉTRICAS ────────────────────────────────────────── -->
   <div id="tab-metricas" class="tab-pane hidden" role="tabpanel">
     <div id="metricas-container" class="metricas-container"></div>
+    <p class="tab-crosslink">
+      Procurando o Relatório Mensal? Está na aba <strong>📑 RELATÓRIO</strong>.
+    </p>
+  </div>
 
+  <!-- TAB: RELATÓRIO ───────────────────────────────────────── -->
+  <div id="tab-relatorio" class="tab-pane hidden" role="tabpanel">
     <div class="bloco-card relatorio-card">
       <div class="bloco-titulo">RELATÓRIO MENSAL</div>
       <div class="relatorio-body">
@@ -203,7 +216,7 @@
           sem "Tipo de Missão" definido entram numa aba separada
           "NÃO CLASSIFICADO" para não se perderem.
         </p>
-        <button class="btn btn-primary btn-sm" onclick="NIT_EFETIVO.Modals.abrirRelatorioMensal()">
+        <button id="btn-gerar-relatorio" class="btn btn-primary btn-sm" onclick="NIT_EFETIVO.Modals.abrirRelatorioMensal()">
           📊 GERAR RELATÓRIO MENSAL
         </button>
       </div>
