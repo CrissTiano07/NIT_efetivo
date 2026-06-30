@@ -52,6 +52,17 @@
   --color-text-tertiary-dim: rgba(148,163,184,0.12);
   --color-text-tertiary-dim: color-mix(in srgb, var(--color-text-tertiary) 12%, transparent);
 
+  /* Cores adicionais identificadas no NIT Sistema Integrado (Semáforos) —
+     registradas no vocabulário mesmo sem uso imediato no Efetivo, para
+     manter os dois sistemas com a mesma paleta semântica disponível. */
+  --color-coral:           #ff6b6b;
+  --color-coral-dim:       rgba(255,107,107,0.12);
+  --color-coral-dim:       color-mix(in srgb, var(--color-coral) 12%, transparent);
+
+  --color-orange:          #f97316;
+  --color-orange-dim:      rgba(249,115,22,0.12);
+  --color-orange-dim:      color-mix(in srgb, var(--color-orange) 12%, transparent);
+
   /* Status de recursos */
   --color-status-disponivel: #38bd6b;
   --color-status-escalado:   #58a6ff;
@@ -250,13 +261,20 @@ input, select, button, textarea {
   text-align: center;
   box-shadow: 0 20px 60px rgba(0,0,0,0.5);
 }
-.login-badge {
+/* Badge de marca "NIT" — unificado entre login, modo campo e nav do
+   dashboard (antes eram 3 regras quase idênticas: .login-badge,
+   .campo-nit, .nav-nit). Fundo preenchido (não apenas contorno),
+   alinhado ao padrão pill do NIT Sistema Integrado. */
+.brand-pill {
   display: inline-block;
   font-family: var(--font-mono); font-weight: 600;
   font-size: 0.7rem; letter-spacing: 0.1em;
-  color: var(--color-accent); border: 1px solid var(--color-accent);
-  padding: 2px 8px; border-radius: 4px; margin-bottom: 8px;
+  color: var(--color-accent);
+  background: var(--color-accent-dim);
+  border: 1px solid var(--color-accent);
+  padding: 2px 8px; border-radius: 4px;
 }
+.login-badge { margin-bottom: 8px; }
 .login-logo {
   font-family: var(--font-mono); font-weight: 600;
   font-size: 2rem; letter-spacing: 0.08em;
@@ -322,12 +340,6 @@ input, select, button, textarea {
   margin-bottom: 12px;
 }
 .campo-logo-group { display: flex; align-items: baseline; gap: 6px; }
-.campo-nit {
-  font-family: var(--font-mono); font-weight: 600;
-  font-size: 0.7rem; letter-spacing: 0.12em;
-  color: var(--color-accent); border: 1px solid var(--color-accent);
-  padding: 2px 6px; border-radius: 3px;
-}
 .campo-efetivo-label {
   font-family: var(--font-mono); font-weight: 600;
   font-size: 1rem; color: var(--color-text-primary); letter-spacing: 0.06em;
@@ -524,11 +536,6 @@ input, select, button, textarea {
   position: sticky; top: 0; z-index: 100;
 }
 .nav-brand { display: flex; align-items: baseline; gap: 6px; }
-.nav-nit {
-  font-family: var(--font-mono); font-weight: 600; font-size: 0.7rem;
-  letter-spacing: 0.12em; color: var(--color-accent);
-  border: 1px solid var(--color-accent); padding: 2px 6px; border-radius: 3px;
-}
 .nav-efetivo {
   font-family: var(--font-mono); font-weight: 600;
   font-size: 0.95rem; color: var(--color-text-primary); letter-spacing: 0.06em;
@@ -1076,6 +1083,32 @@ input, select, button, textarea {
   font-size: .76rem;
   font-weight: 600;
 }
+
+/* ── INDICADOR DE CONEXÃO — dot + label (padrão NIT Sistema Integrado) ── */
+.status-indicator {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.75rem; font-weight: 600;
+}
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--color-decorative);
+  flex-shrink: 0;
+}
+.status-dot-online  { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
+.status-dot-offline { background: var(--color-danger); }
+.status-label-online  { color: var(--color-success); }
+.status-label-offline { color: var(--color-danger); }
+
+/* ── Classes que substituem estilos inline (extraídos do HTML) ──── */
+.tmpl-postos-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 16px 0 8px;
+}
+.tmpl-postos-header .form-label { margin: 0; }
+.modal-hint {
+  margin-top: 10px; font-size: 0.75rem;
+}
+.input-spaced { margin-bottom: 8px; }
 
 @media (max-width: 768px) {
   .tab-pane { padding: 12px; }
