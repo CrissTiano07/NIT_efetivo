@@ -93,6 +93,37 @@ const NIT_EFETIVO = (() => {
     return base.replace(RE_HORARIO_RESIDUAL, '').trim();
   }
 
+  // ── HIERARQUIA DE ALERTA — horários fora do padrão ─────────────
+  function horaParaMinutos(hhmm) {
+    if (!hhmm) return null;
+    const [h, m] = hhmm.split(':').map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+  }
+
+  // Nível 1: a escala inteira foge do padrão — tipo "especial" OU um
+  // turno padrão (manha/tarde/noite) cujo horário real foi editado
+  // para diferir do horário oficial daquele tipo de turno.
+  function escalaForaDoPadrao(escala) {
+    if (!escala) return false;
+    if (escala.turno === 'especial') return true;
+    const cfg = CFG.TURNOS[escala.turno];
+    if (!cfg) return true; // tipo desconhecido — trata como fora do padrão por segurança
+    return escala.horarioInicio !== cfg.inicio || escala.horarioFim !== cfg.fim;
+  }
+
+  // Nível 2: uma operação específica começa fora da janela oficial do
+  // turno em que está inserida (ex: Corrida Sefaz às 05:00h dentro de
+  // um turno Manhã que abre oficialmente às 05:30h).
+  function operacaoForaDoPadrao(op, escala) {
+    if (!op?.horario || !escala) return false;
+    const opMin  = horaParaMinutos(op.horario);
+    const iniMin = horaParaMinutos(escala.horarioInicio);
+    const fimMin = horaParaMinutos(escala.horarioFim);
+    if (opMin === null || iniMin === null || fimMin === null) return false;
+    return opMin < iniMin || opMin > fimMin;
+  }
+
   function getTurnosAtivos() {
     const brt = new Date(new Date().toLocaleString('en-US', { timeZone:'America/Fortaleza' }));
     const min = brt.getHours()*60 + brt.getMinutes();
@@ -666,12 +697,16 @@ const NIT_EFETIVO = (() => {
       });
 
       const w = canWrite();
+      const foraPadrao = escalaForaDoPadrao(escala);
       cont.innerHTML = `
         <div class="escala-header">
           <div class="escala-title">
             <span class="badge badge-${escala.status}">${upper(escala.status)}</span>
             <h2>${esc(turnoLabel(escala))} · ${formatData(escala.data)}</h2>
-            <span class="escala-horario">${esc(escala.horarioInicio)}–${esc(escala.horarioFim)}</span>
+            <span class="escala-horario${foraPadrao ? ' escala-horario-alerta' : ''}">
+              ${foraPadrao ? '⚠ ' : ''}${esc(escala.horarioInicio)}–${esc(escala.horarioFim)}
+            </span>
+            ${foraPadrao ? `<span class="badge badge-warning" title="Horário diferente do padrão deste tipo de turno">FORA DO PADRÃO</span>` : ''}
           </div>
           <div class="escala-actions">
             ${w ? `
@@ -684,7 +719,7 @@ const NIT_EFETIVO = (() => {
         </div>
         ${UI._supervisaoHTML(escala)}
         ${UI._viaturasHTML(escala, qruVt)}
-        ${ops.map(([opId,op]) => UI._operacaoHTML(opId, op, postosEscala, w)).join('')}
+        ${ops.map(([opId,op]) => UI._operacaoHTML(opId, op, postosEscala, w, escala)).join('')}
         ${w ? `<div class="add-operacao-hint" onclick="NIT_EFETIVO.Modals.abrirAddOperacao()">
           + Adicionar operação / evento ao turno
         </div>` : ''}
@@ -758,10 +793,11 @@ const NIT_EFETIVO = (() => {
       </div>`;
     },
 
-    _operacaoHTML(opId, op, postosEscala, writeable) {
+    _operacaoHTML(opId, op, postosEscala, writeable, escala) {
       const postosOp = postosEscala
         .filter(([,p]) => p.operacaoId === opId)
         .sort(([,a],[,b]) => (a.numero||0) - (b.numero||0));
+      const horarioAlerta = operacaoForaDoPadrao(op, escala);
 
       const linhas = postosOp.map(([postoId, posto]) => {
         const nome  = esc(posto.alocacao?.nome || '—');
@@ -783,11 +819,16 @@ const NIT_EFETIVO = (() => {
         <div class="bloco-titulo operacao-titulo">
           ${op.bairro ? `<span class="op-bairro">${upper(op.bairro)}</span>` : ''}
           <span class="op-nome">${esc(op.nome)}</span>
-          ${op.horario ? `<span class="op-horario">${op.horario}h</span>` : ''}
+          ${op.horario ? `
+            <span class="op-horario${horarioAlerta ? ' op-horario-alerta' : ''}"
+              ${horarioAlerta ? `title="Fora da janela do turno (${esc(escala?.horarioInicio)}–${esc(escala?.horarioFim)})"` : ''}>
+              ${horarioAlerta ? '⚠ ' : ''}${op.horario}h
+            </span>` : ''}
           <span class="op-count">${postosOp.length} QRU${postosOp.length!==1?'s':''}</span>
           ${writeable
             ? `<button class="btn btn-secondary btn-sm" onclick="NIT_EFETIVO.Modals.abrirAddPosto('${opId}')">+ QRU</button>` : ''}
         </div>
+        ${horarioAlerta ? `<div class="op-alerta-banner">⚠ Esta operação começa fora do horário oficial do turno (${esc(escala?.horarioInicio)}–${esc(escala?.horarioFim)})</div>` : ''}
         <div class="postos-lista">
           ${linhas || '<div class="empty-cell">Nenhum posto designado</div>'}
         </div>
