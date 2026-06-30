@@ -15,13 +15,13 @@ const NIT_EFETIVO = (() => {
   // ═══════════════════════════════════════════════════════════════
   const CFG = {
     firebase: {
-      apiKey:            'SUBSTITUIR_API_KEY',
+      apiKey:            'AIzaSyCWAGfmCr-pHr0asIk_Sfz1WbajIEhiZn0',
       authDomain:        'nit-operacional.firebaseapp.com',
       databaseURL:       'https://nit-operacional-default-rtdb.firebaseio.com',
       projectId:         'nit-operacional',
       storageBucket:     'nit-operacional.appspot.com',
-      messagingSenderId: 'SUBSTITUIR',
-      appId:             'SUBSTITUIR'
+      messagingSenderId: '823046484118',
+      appId:             '1:823046484118:web:487159cabb28ae275bd2b7'
     },
     TURNOS: {
       manha: { label:'MANHÃ',  inicio:'05:30', fim:'11:30', minI:330,  minF:690  },
