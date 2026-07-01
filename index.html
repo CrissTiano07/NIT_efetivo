@@ -319,14 +319,14 @@
       </div>
 
       <!-- ── CONTEXTO DA OPERAÇÃO ────────────────────────────── -->
-      <!-- Visível ao criar nova operação; oculto ao adicionar   -->
-      <!-- QRU em operação já existente                          -->
       <div id="op-contexto-section">
         <!-- a. Bairro com autocomplete dos 106 bairros oficiais -->
         <label class="form-label">Bairro / Área *</label>
         <div class="combo-wrap">
           <input id="op-bairro-input" type="text" class="input-field"
-            placeholder="Digite o bairro..." autocomplete="off">
+            placeholder="Digite o bairro..."
+            autocomplete="off"
+            oninput="NIT_EFETIVO.Modals._autoGerarNomeOp()">
           <div id="op-bairro-list" class="combo-list"></div>
         </div>
 
@@ -344,19 +344,24 @@
         </label>
         <input id="op-horario" type="time" class="input-field">
 
-        <!-- Nome gerado automaticamente — editável se necessário -->
-        <div id="op-nome-section">
+        <!-- Nome auto-gerado — campo interno, oculto no fluxo primário.
+             Só aparece se o supervisor precisar personalizar.           -->
+        <div id="op-nome-section" style="display:none">
           <label class="form-label">Nome da operação
             <span class="form-label-hint">gerado automaticamente</span>
           </label>
           <input id="op-nome" type="text" class="input-field"
             placeholder="Preenchido ao selecionar tipo + bairro..." autocomplete="off">
         </div>
+        <button type="button" class="btn-editar-nome" id="btn-toggle-nome"
+          onclick="NIT_EFETIVO.Modals.toggleNomeOp()">
+          ✎ Personalizar nome da operação
+        </button>
       </div>
 
       <!-- ── QRU / POSTO ──────────────────────────────────────── -->
       <div id="op-qru-section">
-        <div class="form-secao-titulo">QRU</div>
+        <div class="form-divisor-qru"></div>
 
         <!-- d. Endereço / Local -->
         <input id="posto-operacao-id" type="hidden">
@@ -364,13 +369,15 @@
         <input id="posto-local" type="text" class="input-field"
           placeholder="Ex: AV DES MOREIRA × AV DOM LUÍS" autocomplete="off">
 
-        <!-- Bairro herdado (oculto, enviado automaticamente) -->
+        <!-- Bairro e horário herdados automaticamente da operação -->
         <input id="posto-bairro" type="hidden">
         <input id="posto-horario" type="hidden">
 
-        <!-- Tipo de ação -->
-        <label class="form-label">Tipo de ação</label>
-        <select id="posto-tipo-acao" class="select-field"></select>
+        <!-- Tipo de ação: compacto, default CONTROLE — não precisa de atenção na maioria dos casos -->
+        <div class="tipo-acao-row">
+          <span class="form-label" style="margin:0">Tipo de ação</span>
+          <select id="posto-tipo-acao" class="select-tipo-acao-inline"></select>
+        </div>
 
         <!-- e. Observação -->
         <label class="form-label">Observação
@@ -390,10 +397,14 @@
           <div id="posto-recurso-list" class="combo-list"></div>
         </div>
 
-        <label class="form-label">Pessoas neste QRU
-          <span class="form-label-hint">padrão 1</span>
-        </label>
-        <input id="posto-qru-pessoas" type="number" class="input-field" value="1" min="1" max="20">
+        <!-- Pessoas — detalhes avançados, colapsados por default -->
+        <details class="qru-detalhes" id="qru-detalhes">
+          <summary class="qru-detalhes-toggle">▸ Detalhes adicionais</summary>
+          <label class="form-label" style="margin-top:10px">Pessoas neste QRU
+            <span class="form-label-hint">padrão 1</span>
+          </label>
+          <input id="posto-qru-pessoas" type="number" class="input-field" value="1" min="1" max="20">
+        </details>
       </div>
     </div>
     <div class="modal-footer">
