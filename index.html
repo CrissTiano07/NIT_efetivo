@@ -298,8 +298,8 @@
 
 <!-- Modal: Nova Operação ─────────────────────────────────────── -->
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- Modal: Novo QRU (fluxo unificado — cria operação + posto   -->
-<!--        em uma única ação quando necessário)                 -->
+<!-- Modal: Novo QRU                                             -->
+<!-- Sequência: a.Bairro b.Tipo c.Horário d.Endereço e.Obs f.Or.-->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div id="modal-add-operacao" class="modal-overlay" onclick="NIT_EFETIVO.Modals._onOverlayClick(event,'modal-add-operacao')">
   <div class="modal-card modal-card-lg">
@@ -309,23 +309,14 @@
     </div>
     <div class="modal-body">
 
-      <!-- Seção de template — só aparece na criação de nova operação -->
-      <div id="op-template-section">
-        <label class="form-label">Usar template</label>
-        <select id="op-template-select" class="select-field">
-          <option value="">— Sem template —</option>
-        </select>
-        <div class="form-divider">ou preencha manualmente:</div>
-      </div>
-
-      <!-- ── CONTEXTO DA OPERAÇÃO ────────────────────────────── -->
+      <!-- Contexto da operação — oculto ao adicionar QRU a op. existente -->
       <div id="op-contexto-section">
-        <!-- a. Bairro com autocomplete dos 106 bairros oficiais -->
-        <label class="form-label">Bairro / Área *</label>
+
+        <!-- a. Bairro -->
+        <label class="form-label">Bairro *</label>
         <div class="combo-wrap">
           <input id="op-bairro-input" type="text" class="input-field"
-            placeholder="Digite o bairro..."
-            autocomplete="off"
+            placeholder="Digite o bairro..." autocomplete="off"
             oninput="NIT_EFETIVO.Modals._autoGerarNomeOp()">
           <div id="op-bairro-list" class="combo-list"></div>
         </div>
@@ -338,54 +329,35 @@
           <option value="">— Selecionar —</option>
         </select>
 
-        <!-- c. Horário — opcional, padrão em branco -->
+        <!-- c. Horário de início -->
         <label class="form-label">Horário de início
           <span class="form-label-hint">opcional</span>
         </label>
         <input id="op-horario" type="time" class="input-field">
 
-        <!-- Nome auto-gerado — campo interno, oculto no fluxo primário.
-             Só aparece se o supervisor precisar personalizar.           -->
-        <div id="op-nome-section" style="display:none">
-          <label class="form-label">Nome da operação
-            <span class="form-label-hint">gerado automaticamente</span>
-          </label>
-          <input id="op-nome" type="text" class="input-field"
-            placeholder="Preenchido ao selecionar tipo + bairro..." autocomplete="off">
-        </div>
-        <button type="button" class="btn-editar-nome" id="btn-toggle-nome"
-          onclick="NIT_EFETIVO.Modals.toggleNomeOp()">
-          ✎ Personalizar nome da operação
-        </button>
+        <!-- Nome interno auto-gerado — nunca exibido ao usuário -->
+        <input id="op-nome" type="hidden">
+
       </div>
 
-      <!-- ── QRU / POSTO ──────────────────────────────────────── -->
+      <!-- QRU — campos d e f ficam abaixo tanto na criação quanto na edição -->
       <div id="op-qru-section">
-        <div class="form-divisor-qru"></div>
 
         <!-- d. Endereço / Local -->
         <input id="posto-operacao-id" type="hidden">
+        <input id="posto-bairro"   type="hidden">
+        <input id="posto-horario"  type="hidden">
         <label class="form-label">Endereço / Local</label>
         <input id="posto-local" type="text" class="input-field"
           placeholder="Ex: AV DES MOREIRA × AV DOM LUÍS" autocomplete="off">
-
-        <!-- Bairro e horário herdados automaticamente da operação -->
-        <input id="posto-bairro" type="hidden">
-        <input id="posto-horario" type="hidden">
-
-        <!-- Tipo de ação: compacto, default CONTROLE — não precisa de atenção na maioria dos casos -->
-        <div class="tipo-acao-row">
-          <span class="form-label" style="margin:0">Tipo de ação</span>
-          <select id="posto-tipo-acao" class="select-tipo-acao-inline"></select>
-        </div>
 
         <!-- e. Observação -->
         <label class="form-label">Observação
           <span class="form-label-hint">opcional</span>
         </label>
-        <input id="posto-obs" type="text" class="input-field" placeholder="">
+        <input id="posto-obs" type="text" class="input-field">
 
-        <!-- f. Orientador / Equipe — humanizado, desobrigado mas sinalizado -->
+        <!-- f. Orientador / Equipe -->
         <label class="form-label">Orientador / Equipe
           <span id="lbl-orientador-hint" class="badge badge-warning" style="display:none">⚠ não designado</span>
         </label>
@@ -397,19 +369,19 @@
           <div id="posto-recurso-list" class="combo-list"></div>
         </div>
 
-        <!-- Pessoas — detalhes avançados, colapsados por default -->
-        <details class="qru-detalhes" id="qru-detalhes">
-          <summary class="qru-detalhes-toggle">▸ Detalhes adicionais</summary>
-          <label class="form-label" style="margin-top:10px">Pessoas neste QRU
-            <span class="form-label-hint">padrão 1</span>
-          </label>
-          <input id="posto-qru-pessoas" type="number" class="input-field" value="1" min="1" max="20">
-        </details>
+        <!-- Tipo de ação: oculto na criação (CONTROLE por padrão),
+             visível apenas ao EDITAR um QRU existente              -->
+        <div id="tipo-acao-section" class="hidden">
+          <label class="form-label">Tipo de ação</label>
+          <select id="posto-tipo-acao" class="select-field"></select>
+        </div>
+
       </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="NIT_EFETIVO.Modals.fecharAddOperacao()">CANCELAR</button>
-      <button class="btn btn-primary" id="btn-confirmar-add-op" onclick="NIT_EFETIVO.Modals.confirmarAddOperacao()">ADICIONAR QRU</button>
+      <button class="btn btn-primary" id="btn-confirmar-add-op"
+        onclick="NIT_EFETIVO.Modals.confirmarAddOperacao()">ADICIONAR QRU</button>
     </div>
   </div>
 </div>
