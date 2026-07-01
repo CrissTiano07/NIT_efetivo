@@ -1157,6 +1157,41 @@ input, select, button, textarea {
 }
 .tab-crosslink strong { color: var(--color-accent); }
 
+/* ── MODAL UNIFICADO OPERAÇÃO+QRU ──────────────────────────── */
+.form-secao-titulo {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.12em;
+  color: var(--color-decorative); text-transform: uppercase;
+  margin: 16px 0 8px; padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+.form-label-hint {
+  font-size: 0.7rem; font-weight: 400; letter-spacing: 0;
+  text-transform: none; color: var(--color-decorative); margin-left: 4px;
+}
+
+/* Toggle tipo de equipe */
+.vt-tipo-toggle {
+  display: flex; gap: 12px; margin-bottom: 4px;
+}
+.vt-tipo-option {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; border-radius: var(--radius);
+  border: 1px solid var(--color-border); cursor: pointer;
+  font-size: .85rem; color: var(--color-text-secondary);
+  transition: all .15s;
+}
+.vt-tipo-option:has(input:checked) {
+  border-color: var(--color-accent);
+  background: var(--color-accent-dim);
+  color: var(--color-text-primary);
+}
+.vt-tipo-option input { display: none; }
+
+/* Hint de orientador não designado */
+#lbl-orientador-hint {
+  font-size: 0.68rem; vertical-align: middle;
+}
+
 @media (max-width: 768px) {
   .tab-pane { padding: 12px; }
 
