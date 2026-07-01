@@ -1775,6 +1775,27 @@ const NIT_EFETIVO = (() => {
       nomeEl.value = tipo && bairro ? `${tipo} — ${bairro}` : tipo || bairro || '';
     },
 
+    // Exibe/oculta o campo de nome da operação — só quando o supervisor
+    // precisa personalizar além do auto-gerado (caso raro)
+    toggleNomeOp() {
+      const sec = $('op-nome-section');
+      const btn = $('btn-toggle-nome');
+      if (!sec) return;
+      const aberto = sec.style.display !== 'none';
+      sec.style.display = aberto ? 'none' : '';
+      if (btn) btn.textContent = aberto ? '✎ Personalizar nome da operação' : '✕ Fechar nome';
+      if (!aberto) $('op-nome')?.focus();
+    },
+
+    // Preenche o select de tipo de ação com CONTROLE como default,
+    // que é o caso mais comum — supervisor só muda quando diferente
+    _montarTipoAcao(selecionado = 'CONTROLE') {
+      const ts = $('posto-tipo-acao');
+      if (!ts) return;
+      ts.innerHTML = CFG.TIPOS_ACAO.map(t =>
+        `<option${t === selecionado ? ' selected' : ''}>${t}</option>`).join('');
+    },
+
     // Sinaliza visualmente quando orientador não foi preenchido
     _onOrientadorInput() {
       const hint = $('lbl-orientador-hint');
@@ -1835,7 +1856,7 @@ const NIT_EFETIVO = (() => {
 
       // Tipos de ação para o QRU
       const ts = $('posto-tipo-acao');
-      if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t => `<option>${t}</option>`).join('');
+      Modals._montarTipoAcao();
 
       // Orientador/Equipe combo
       Modals._montarCombo('posto-recurso-input', 'posto-recurso-list', Modals._itemsOrientadorEquipe());
@@ -1870,9 +1891,8 @@ const NIT_EFETIVO = (() => {
       if (bEl) bEl.value = op.bairro  || '';
       if (hEl) hEl.value = op.horario || '';
 
-      // Tipos de ação
-      const ts = $('posto-tipo-acao');
-      if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t => `<option>${t}</option>`).join('');
+      // Tipos de ação — default CONTROLE (mais comum)
+      Modals._montarTipoAcao();
 
       // Orientador/Equipe
       Modals._montarCombo('posto-recurso-input', 'posto-recurso-list', Modals._itemsOrientadorEquipe());
@@ -1914,9 +1934,8 @@ const NIT_EFETIVO = (() => {
       set('posto-obs',      posto.obs);
       set('posto-qru-pessoas', posto.qruPessoas || 1);
 
-      const ts = $('posto-tipo-acao');
-      if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t =>
-        `<option${t===posto.tipoAcao?' selected':''}>${t}</option>`).join('');
+      // Tipo de ação — pré-seleciona o valor atual do posto
+      Modals._montarTipoAcao(posto.tipoAcao || 'CONTROLE');
 
       const valorAtual = posto.alocacao?.id
         ? `${posto.alocacao.tipo === 'equipe' || posto.alocacao.tipo === 'viatura' ? 'v' : 'a'}:${posto.alocacao.id}`
