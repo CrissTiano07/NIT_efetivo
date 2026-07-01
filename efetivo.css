@@ -1260,15 +1260,64 @@ input, select, button, textarea {
 .tab-crosslink strong { color: var(--color-accent); }
 
 /* ── MODAL UNIFICADO OPERAÇÃO+QRU ──────────────────────────── */
-.form-secao-titulo {
-  font-size: 9px; font-weight: 700; letter-spacing: 0.12em;
-  color: var(--color-decorative); text-transform: uppercase;
-  margin: 16px 0 8px; padding-top: 12px;
-  border-top: 1px solid var(--color-border);
+/* Botão discreto para personalizar o nome da operação */
+.btn-editar-nome {
+  background: none; border: none; cursor: pointer;
+  font-size: 0.72rem; color: var(--color-decorative);
+  padding: var(--space-1) 0; margin-top: var(--space-1);
+  display: block; text-align: left;
+  transition: color var(--duration-fast);
 }
+.btn-editar-nome:hover { color: var(--color-text-secondary); }
+
+/* Divisor minimalista entre operação e QRU */
+.form-divisor-qru {
+  height: 1px; background: var(--color-border);
+  margin: var(--space-4) 0;
+}
+
+/* Tipo de ação compacto: label + select na mesma linha */
+.tipo-acao-row {
+  display: flex; align-items: center; gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.select-tipo-acao-inline {
+  flex: 1; height: 32px;
+  background: var(--color-bg); border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius); color: var(--color-text-secondary);
+  padding: 0 24px 0 8px; font-size: 0.78rem; cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' fill='none'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 6px center;
+}
+.select-tipo-acao-inline:focus { outline: none; border-color: var(--color-accent); }
+.select-tipo-acao-inline option { background: var(--color-bg-surface); }
+
+/* Detalhes adicionais colapsados — Pessoas neste QRU */
+.qru-detalhes {
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
+}
+.qru-detalhes-toggle {
+  font-size: 0.72rem; color: var(--color-decorative);
+  cursor: pointer; user-select: none; list-style: none;
+}
+.qru-detalhes-toggle::-webkit-details-marker { display: none; }
+.qru-detalhes[open] .qru-detalhes-toggle  { color: var(--color-text-secondary); }
+
+/* Hint de label — usado em múltiplos lugares */
 .form-label-hint {
   font-size: 0.7rem; font-weight: 400; letter-spacing: 0;
   text-transform: none; color: var(--color-decorative); margin-left: 4px;
+}
+
+/* form-secao-titulo mantido para retrocompat (bloco de supervisão, etc.) */
+.form-secao-titulo {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.12em;
+  color: var(--color-decorative); text-transform: uppercase;
+  margin: var(--space-4) 0 var(--space-2); padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
 }
 
 /* Toggle tipo de equipe */
