@@ -325,17 +325,23 @@ const NIT_EFETIVO = (() => {
         S.escalaAtiva = ativa ? ativa[0] : null;
 
         if (S.escalaAtiva) {
-          const [rS, oS, pS] = await Promise.all([
+          const [rS, vS, oS, pS] = await Promise.all([
             S.db.ref('efetivo/recursos').once('value'),
+            S.db.ref('efetivo/viaturas').once('value'),
             S.db.ref('efetivo/operacoes').orderByChild('escalaId').equalTo(S.escalaAtiva).once('value'),
             S.db.ref('efetivo/postos').orderByChild('escalaId').equalTo(S.escalaAtiva).once('value')
           ]);
           S.recursos  = rS.val() || {};
+          S.viaturas  = vS.val() || {};
           S.operacoes = oS.val() || {};
           S.postos    = pS.val() || {};
         } else {
-          const rS = await S.db.ref('efetivo/recursos').once('value');
+          const [rS, vS] = await Promise.all([
+            S.db.ref('efetivo/recursos').once('value'),
+            S.db.ref('efetivo/viaturas').once('value')
+          ]);
           S.recursos = rS.val() || {};
+          S.viaturas = vS.val() || {};
         }
       } catch(e) {
         console.error('[DB.initPublico]', e);
@@ -438,6 +444,17 @@ const NIT_EFETIVO = (() => {
         criadoEm: Date.now(), criadoPor: S.user?.email
       });
       Log.write('escala_criada', null, { escalaId:ref.key, ...dados });
+
+      // Auto-aplicar template de supervisão padrão, se configurado.
+      // O supervisor Admin define via "Salvar como Padrão" na seção
+      // de Supervisão — isso evita reentrar os dois supervisores
+      // fixos toda vez que um novo turno é aberto.
+      const supPadrao = await S.db.ref('efetivo/config/supervisao_padrao').once('value');
+      if (supPadrao.exists()) {
+        await S.db.ref(`efetivo/escalas/${ref.key}/supervisao`).set(supPadrao.val());
+        Log.write('supervisao_padrao_aplicada', null, { escalaId: ref.key });
+      }
+
       return ref.key;
     },
 
@@ -657,6 +674,14 @@ const NIT_EFETIVO = (() => {
       Log.write('supervisao_removida', recursoId, { escalaId, camada });
     },
 
+    // Salva a composição de supervisão do turno ativo como padrão
+    // para todos os próximos turnos (Admin only).
+    async salvarSupervisaoPadrao(escalaId) {
+      const sup = S.escalas[escalaId]?.supervisao || {};
+      await S.db.ref('efetivo/config/supervisao_padrao').set(sup);
+      Log.write('supervisao_padrao_salva', null, { escalaId });
+    },
+
     // ── RELATÓRIO MENSAL — sem backend, lê o Firebase direto ────
     // Firebase não tem busca por prefixo de string; mas datas em
     // formato ISO "YYYY-MM-DD" ordenam lexicograficamente igual a
@@ -695,6 +720,8 @@ const NIT_EFETIVO = (() => {
     },
 
     // ── EQUIPES / VIATURAS — entidade persistente, independente de turno ──
+    // temViatura: true = tem veículo; false = equipe a pé / fixa sem viatura.
+    // Funcionalidade idêntica nos dois casos; só o ícone de exibição muda.
     async cadastrarViatura(dados) {
       const ref = await S.db.ref('efetivo/viaturas').push({
         ...dados, status:'disponivel', criadoEm: Date.now(), criadoPor: S.user?.email
@@ -1043,8 +1070,13 @@ const NIT_EFETIVO = (() => {
         })
       ).join('');
       if (!linhas) return '';
+      const a = canAdmin();
       return `<div class="bloco-card">
-        <div class="bloco-titulo">SUPERVISÃO E MONITORAMENTO</div>
+        <div class="bloco-titulo">SUPERVISÃO E MONITORAMENTO
+          ${a ? `<button class="btn btn-secondary btn-sm" style="margin-left:auto"
+            title="Salvar esta composição como padrão para todos os próximos turnos"
+            onclick="NIT_EFETIVO.Actions.salvarSupervisaoPadrao()">⭐ Salvar como padrão</button>` : ''}
+        </div>
         <div class="supervisao-lista">${linhas}</div>
       </div>`;
     },
@@ -1683,6 +1715,14 @@ const NIT_EFETIVO = (() => {
       inp.value = item.label;
       data.value = value;
       if (list) list.classList.remove('open');
+
+      // Auto-preenchimento contextual após seleção:
+      // supervisão → preenche contato com telefone do recurso
+      if (inputId === 'sup-recurso-input') {
+        const r = S.recursos[value];
+        const cEl = $('sup-contato');
+        if (cEl && r?.telefone && !cEl.value) cEl.value = r.telefone;
+      }
     },
 
     _resolverCombo(inputId) {
@@ -1698,10 +1738,338 @@ const NIT_EFETIVO = (() => {
       return exato ? exato.value : '';
     },
 
-    _editPostoId: null, // null = modo criação; string = modo edição
+    _editPostoId: null,    // null = criação; string = edição
+    _editOperacaoId: null, // null = criação; string = edição
+    _modoQruEmOperacao: null, // null = criar operação nova; string = opId de operação já existente
 
-    // ── ABRIR TURNO ──────────────────────────────────────────
-    _editEscalaMode: false,
+    // ── BAIRRO AUTOCOMPLETE ──────────────────────────────────
+    // Monta combo com os 106 bairros oficiais.
+    // Retorna o nome oficial reconhecido ou o texto digitado se não bater.
+    _montarBairroCombo() {
+      const items = CFG.BAIRROS_OFICIAL.map(b => ({ value: b, label: b }));
+      Modals._montarCombo('op-bairro-input', 'op-bairro-list', items);
+    },
+
+    // Quando tipo ou bairro muda, auto-gera o nome da operação
+    _autoGerarNomeOp() {
+      const tipo   = $('op-tipo-missao')?.value || '';
+      const bairro = Modals._resolverCombo('op-bairro-input') ||
+                     $('op-bairro-input')?.value?.trim() || '';
+      const nomeEl = $('op-nome');
+      if (!nomeEl || nomeEl._editadoManualmente) return;
+      nomeEl.value = tipo && bairro ? `${tipo} — ${bairro}` : tipo || bairro || '';
+    },
+
+    // Sinaliza visualmente quando orientador não foi preenchido
+    _onOrientadorInput() {
+      const hint = $('lbl-orientador-hint');
+      if (!hint) return;
+      const val = ($('posto-recurso-input')?.value || '').trim();
+      hint.style.display = val ? 'none' : '';
+    },
+
+    // ── FLUXO UNIFICADO: NOVA OPERAÇÃO + QRU ────────────────
+    // Cria operação nova E o primeiro QRU em um único formulário.
+    // Cliques: 1 (antes eram 2 modais separados).
+    abrirAddOperacao() {
+      if (!S.escalaAtiva) { UI.toast('Abra um turno primeiro','warning'); return; }
+      Modals._editOperacaoId = null;
+      Modals._editPostoId    = null;
+      Modals._modoQruEmOperacao = null;
+
+      // Mostrar contexto de operação (seção superior)
+      const ctxSec = $('op-contexto-section');
+      const qruSec = $('op-qru-section');
+      if (ctxSec) ctxSec.style.display = '';
+      if (qruSec) qruSec.style.display = '';
+
+      // Templates
+      const tmplSection = $('op-template-section');
+      const tmplSel     = $('op-template-select');
+      const templates   = Object.entries(S.templates);
+      if (tmplSection && tmplSel) {
+        if (templates.length) {
+          tmplSection.style.display = '';
+          tmplSel.innerHTML =
+            `<option value="">— Sem template —</option>` +
+            templates
+              .sort(([,a],[,b]) => (a.nome||'').localeCompare(b.nome||'','pt-BR'))
+              .map(([id,t]) => `<option value="${id}">${esc(t.nome)}${t.bairro?' · '+upper(t.bairro):''}</option>`)
+              .join('');
+        } else {
+          tmplSection.style.display = 'none';
+        }
+      }
+
+      // Bairro autocomplete
+      Modals._montarBairroCombo();
+
+      // Tipo de missão
+      const tipoSel = $('op-tipo-missao');
+      if (tipoSel) {
+        tipoSel.innerHTML = `<option value="">— Selecionar —</option>` +
+          CFG.TIPOS_MISSAO.map(t => `<option>${t}</option>`).join('');
+        tipoSel.onchange = Modals._autoGerarNomeOp;
+      }
+
+      // Nome auto-gerado (não editado manualmente inicialmente)
+      const nomeEl = $('op-nome');
+      if (nomeEl) { nomeEl.value = ''; nomeEl._editadoManualmente = false;
+        nomeEl.addEventListener('input', () => { nomeEl._editadoManualmente = true; }, { once:true });
+      }
+
+      // Tipos de ação para o QRU
+      const ts = $('posto-tipo-acao');
+      if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t => `<option>${t}</option>`).join('');
+
+      // Orientador/Equipe combo
+      Modals._montarCombo('posto-recurso-input', 'posto-recurso-list', Modals._itemsOrientadorEquipe());
+      Modals._onOrientadorInput(); // inicializa hint
+
+      // Título e botão
+      const titulo = $('modal-add-operacao-titulo');
+      const btn    = $('btn-confirmar-add-op');
+      if (titulo) titulo.textContent = 'NOVO QRU';
+      if (btn)    btn.textContent    = 'ADICIONAR QRU';
+
+      Modals._open('modal-add-operacao');
+    },
+
+    // Modo: adicionar QRU a uma operação já existente (contexto oculto)
+    abrirAddPosto(opId) {
+      const op = S.operacoes[opId] || {};
+      Modals._editOperacaoId = null;
+      Modals._editPostoId    = null;
+      Modals._modoQruEmOperacao = opId;
+
+      // Esconder contexto de operação (já existe)
+      const ctxSec = $('op-contexto-section');
+      const tmplSec = $('op-template-section');
+      if (ctxSec)  ctxSec.style.display  = 'none';
+      if (tmplSec) tmplSec.style.display = 'none';
+      const qruSec = $('op-qru-section');
+      if (qruSec) qruSec.style.display = '';
+
+      // Herdar bairro e horário da operação (campos hidden)
+      const bEl = $('posto-bairro'), hEl = $('posto-horario');
+      if (bEl) bEl.value = op.bairro  || '';
+      if (hEl) hEl.value = op.horario || '';
+
+      // Tipos de ação
+      const ts = $('posto-tipo-acao');
+      if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t => `<option>${t}</option>`).join('');
+
+      // Orientador/Equipe
+      Modals._montarCombo('posto-recurso-input', 'posto-recurso-list', Modals._itemsOrientadorEquipe());
+      Modals._onOrientadorInput();
+
+      // Limpar campos do QRU
+      const set = (id, val) => { const el=$(id); if(el) el.value = val||''; };
+      set('posto-local',''); set('posto-obs',''); set('posto-qru-pessoas','1');
+
+      const titulo = $('modal-add-operacao-titulo');
+      const btn    = $('btn-confirmar-add-op');
+      if (titulo) titulo.textContent = `QRU PARA: ${esc(op.nome||'—')}`;
+      if (btn)    btn.textContent    = 'ADICIONAR QRU';
+
+      Modals._open('modal-add-operacao');
+    },
+
+    abrirEditPosto(postoId) {
+      const posto = S.postos[postoId];
+      if (!posto) return;
+      const op = S.operacoes[posto.operacaoId] || {};
+      Modals._editPostoId       = postoId;
+      Modals._editOperacaoId    = null;
+      Modals._modoQruEmOperacao = posto.operacaoId;
+
+      // Esconder contexto de operação na edição de QRU
+      const ctxSec  = $('op-contexto-section');
+      const tmplSec = $('op-template-section');
+      if (ctxSec)  ctxSec.style.display  = 'none';
+      if (tmplSec) tmplSec.style.display = 'none';
+      const qruSec = $('op-qru-section');
+      if (qruSec) qruSec.style.display = '';
+
+      const set = (id, val) => { const el=$(id); if(el) el.value = val||''; };
+      set('posto-operacao-id', posto.operacaoId);
+      set('posto-local',    posto.local);
+      set('posto-bairro',   posto.bairro  || op.bairro  || '');
+      set('posto-horario',  posto.horario || op.horario || '');
+      set('posto-obs',      posto.obs);
+      set('posto-qru-pessoas', posto.qruPessoas || 1);
+
+      const ts = $('posto-tipo-acao');
+      if (ts) ts.innerHTML = CFG.TIPOS_ACAO.map(t =>
+        `<option${t===posto.tipoAcao?' selected':''}>${t}</option>`).join('');
+
+      const valorAtual = posto.alocacao?.id
+        ? `${posto.alocacao.tipo === 'equipe' || posto.alocacao.tipo === 'viatura' ? 'v' : 'a'}:${posto.alocacao.id}`
+        : null;
+      Modals._montarCombo('posto-recurso-input', 'posto-recurso-list',
+        Modals._itemsOrientadorEquipe(), valorAtual);
+      Modals._onOrientadorInput();
+
+      const titulo = $('modal-add-operacao-titulo');
+      const btn    = $('btn-confirmar-add-op');
+      if (titulo) titulo.textContent = `EDITAR QRU Nº ${posto.numero}`;
+      if (btn)    btn.textContent    = 'SALVAR ALTERAÇÕES';
+
+      Modals._open('modal-add-operacao');
+    },
+
+    abrirEditOperacao(opId) {
+      const op = S.operacoes[opId];
+      if (!op) return;
+      Modals._editOperacaoId    = opId;
+      Modals._editPostoId       = null;
+      Modals._modoQruEmOperacao = null;
+
+      // Mostrar só o contexto de operação, não o QRU
+      const ctxSec  = $('op-contexto-section');
+      const tmplSec = $('op-template-section');
+      const qruSec  = $('op-qru-section');
+      if (ctxSec)  ctxSec.style.display  = '';
+      if (tmplSec) tmplSec.style.display = 'none';
+      if (qruSec)  qruSec.style.display  = 'none';
+
+      // Bairro
+      Modals._montarBairroCombo();
+      const bEl = $('op-bairro-input');
+      if (bEl) bEl.value = op.bairro || '';
+
+      const set = (id, val) => { const el=$(id); if(el) el.value = val||''; };
+      set('op-horario', op.horario);
+
+      const tipoSel = $('op-tipo-missao');
+      if (tipoSel) {
+        tipoSel.innerHTML = `<option value="">— Selecionar —</option>` +
+          CFG.TIPOS_MISSAO.map(t => `<option${t===op.tipoMissao?' selected':''}>${t}</option>`).join('');
+        tipoSel.onchange = null;
+      }
+
+      const nomeEl = $('op-nome');
+      if (nomeEl) { nomeEl.value = op.nome || ''; nomeEl._editadoManualmente = true; }
+
+      const titulo = $('modal-add-operacao-titulo');
+      const btn    = $('btn-confirmar-add-op');
+      if (titulo) titulo.textContent = 'EDITAR OPERAÇÃO';
+      if (btn)    btn.textContent    = 'SALVAR ALTERAÇÕES';
+
+      Modals._open('modal-add-operacao');
+    },
+
+    fecharAddOperacao() {
+      Modals._editOperacaoId    = null;
+      Modals._editPostoId       = null;
+      Modals._modoQruEmOperacao = null;
+      Modals._close('modal-add-operacao');
+    },
+    fecharAddPosto() { Modals.fecharAddOperacao(); }, // alias retrocompat.
+
+    // Lista de orientadores (ex-recursos) + equipes (ex-viaturas).
+    // Nome humanizado: "Orientador/Equipe" em vez de "Agente/Viatura".
+    _itemsOrientadorEquipe() {
+      const agentes = recursosOrdenados(([,r]) => r.status !== 'desligado')
+        .map(([id,r]) => ({
+          value: `a:${id}`,
+          label: `${r.nome} · ${r.cargo||'—'}`
+        }));
+      const equipes = sortByNome(Object.entries(S.viaturas))
+        .map(([id,v]) => ({
+          value: `v:${id}`,
+          label: `👥 ${v.nome||id}${v.temViatura?' 🚓':''}`
+        }));
+      return [...agentes, ...equipes];
+    },
+    // Alias para retrocompat com refs no HTML gerado
+    _itemsRecursoViatura() { return Modals._itemsOrientadorEquipe(); },
+
+    async confirmarAddOperacao() {
+      // ── MODO EDITAR OPERAÇÃO ──────────────────────────────
+      if (Modals._editOperacaoId && !Modals._editPostoId) {
+        const bairro     = Modals._resolverCombo('op-bairro-input') || $('op-bairro-input')?.value?.trim();
+        const hor        = $('op-horario')?.value;
+        const tipoMissao = $('op-tipo-missao')?.value;
+        const nome       = $('op-nome')?.value.trim();
+        if (!tipoMissao) { UI.toast('Selecione o tipo de missão','warning'); return; }
+        await DB.editarOperacao(Modals._editOperacaoId, {
+          nome: upper(nome || tipoMissao), bairro: upper(bairro||''), horario:hor, tipoMissao
+        });
+        Modals.fecharAddOperacao();
+        UI.toast('Operação atualizada!', 'success');
+        return;
+      }
+
+      // ── MODO TEMPLATE ─────────────────────────────────────
+      const templateId = $('op-template-select')?.value || '';
+      if (templateId) {
+        await DB.aplicarTemplate(templateId, S.escalaAtiva);
+        Modals.fecharAddOperacao();
+        UI.toast(`Template aplicado!`, 'success');
+        return;
+      }
+
+      // ── SALVAR QRU (com ou sem nova operação) ─────────────
+      const local   = $('posto-local')?.value.trim();
+      const recVal  = Modals._resolverCombo('posto-recurso-input');
+      const tipo    = $('posto-tipo-acao')?.value;
+      const obs     = $('posto-obs')?.value.trim();
+      const qruP    = parseInt($('posto-qru-pessoas')?.value)||1;
+
+      // Alocação — opcional agora (orientador pode ser designado depois)
+      let alocacao = null;
+      if (recVal) {
+        if (recVal.startsWith('v:')) {
+          const id = recVal.slice(2);
+          alocacao = { tipo:'equipe', id, nome: S.viaturas[id]?.nome||id };
+        } else {
+          const id = recVal.slice(2);
+          alocacao = { tipo:'agente', id, nome: S.recursos[id]?.nome||id };
+        }
+      }
+
+      let opId = Modals._modoQruEmOperacao;
+
+      // Se não há operação pré-existente, criar primeiro
+      if (!opId) {
+        const bairro     = Modals._resolverCombo('op-bairro-input') || $('op-bairro-input')?.value?.trim();
+        const hor        = $('op-horario')?.value;
+        const tipoMissao = $('op-tipo-missao')?.value;
+        const nomeEl     = $('op-nome');
+        const nome       = nomeEl?.value.trim() || (tipoMissao && bairro ? `${tipoMissao} — ${bairro}` : tipoMissao||bairro||'OPERAÇÃO');
+        if (!bairro)     { UI.toast('Bairro é obrigatório','warning'); return; }
+        if (!tipoMissao) { UI.toast('Selecione o tipo de missão','warning'); return; }
+        opId = await DB.adicionarOperacao(S.escalaAtiva, {
+          nome: upper(nome), bairro: upper(bairro), horario: hor||'', tipoMissao
+        });
+      }
+
+      // Adicionar posto (orientador é opcional — sinalizado visualmente se ausente)
+      const op = S.operacoes[opId] || {};
+      const dadosPosto = {
+        local:    upper(local||''),
+        bairro:   upper(($('posto-bairro')?.value||op.bairro||'')),
+        horario:  $('posto-horario')?.value || op.horario || '',
+        tipoAcao: tipo,
+        alocacao,
+        obs:      upper(obs),
+        qruPessoas: qruP
+      };
+
+      if (Modals._editPostoId) {
+        const anterior = S.postos[Modals._editPostoId]?.alocacao;
+        await DB.editarPosto(Modals._editPostoId, dadosPosto, anterior);
+        UI.toast('QRU atualizado!', 'success');
+      } else {
+        await DB.adicionarPosto({ escalaId: S.escalaAtiva, operacaoId: opId, ...dadosPosto });
+        UI.toast(local ? 'QRU adicionado!' : 'QRU adicionado — designar orientador depois.', 'success');
+      }
+      Modals.fecharAddOperacao();
+    },
+
+    // ── SUPERVISÃO ───────────────────────────────────────────
+
 
     abrirCriarEscala() {
       Modals._editEscalaMode = false;
@@ -2440,8 +2808,10 @@ const NIT_EFETIVO = (() => {
     },
 
     async confirmarCadastroViatura() {
-      const nome    = upper($('vt-nome')?.value.trim());
-      const liderId = Modals._resolverCombo('vt-lider-input');
+      const nome      = upper($('vt-nome')?.value.trim());
+      const liderId   = Modals._resolverCombo('vt-lider-input');
+      const tipoEl    = document.querySelector('input[name="vt-tipo"]:checked');
+      const temViatura = tipoEl?.value === 'viatura';
       if (!nome)    { UI.toast('Nome da equipe é obrigatório','warning'); return; }
       if (!liderId) { UI.toast('Selecione um líder válido da lista','warning'); return; }
 
@@ -2450,10 +2820,10 @@ const NIT_EFETIVO = (() => {
         .forEach(el => { membrosIds[el.value] = true; });
 
       if (Modals._editViaturaId) {
-        await DB.editarViatura(Modals._editViaturaId, { nome, liderId, membrosIds });
+        await DB.editarViatura(Modals._editViaturaId, { nome, liderId, membrosIds, temViatura });
         UI.toast('Equipe atualizada!', 'success');
       } else {
-        await DB.cadastrarViatura({ nome, liderId, membrosIds });
+        await DB.cadastrarViatura({ nome, liderId, membrosIds, temViatura });
         UI.toast('Equipe cadastrada!', 'success');
       }
       Modals.fecharCadastroViatura();
@@ -2557,6 +2927,14 @@ const NIT_EFETIVO = (() => {
       await DB.aplicarTemplate(templateId, S.escalaAtiva);
       UI.switchTab('escala');
       UI.toast(`"${t.nome}" aplicado! Designe os agentes nos postos.`, 'success');
+    },
+
+    async salvarSupervisaoPadrao() {
+      if (!S.escalaAtiva) { UI.toast('Nenhuma escala ativa','warning'); return; }
+      if (!confirm('Salvar a supervisão atual como padrão para todos os próximos turnos?\n\nOs supervisores e funções atuais serão pré-preenchidos automaticamente ao abrir cada novo turno.')) return;
+      vibrar(50);
+      await DB.salvarSupervisaoPadrao(S.escalaAtiva);
+      UI.toast('Supervisão padrão salva! Será aplicada automaticamente nos próximos turnos.', 'success');
     },
 
     async encerrarEscala() {
