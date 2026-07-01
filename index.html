@@ -297,39 +297,108 @@
 </div>
 
 <!-- Modal: Nova Operação ─────────────────────────────────────── -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- Modal: Novo QRU (fluxo unificado — cria operação + posto   -->
+<!--        em uma única ação quando necessário)                 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 <div id="modal-add-operacao" class="modal-overlay" onclick="NIT_EFETIVO.Modals._onOverlayClick(event,'modal-add-operacao')">
-  <div class="modal-card">
+  <div class="modal-card modal-card-lg">
     <div class="modal-header">
-      <h3>NOVA OPERAÇÃO</h3>
+      <h3 id="modal-add-operacao-titulo">NOVO QRU</h3>
       <button class="modal-close" onclick="NIT_EFETIVO.Modals.fecharAddOperacao()">×</button>
     </div>
     <div class="modal-body">
-      <!-- Selector de template (ocultado se não há templates) -->
+
+      <!-- Seção de template — só aparece na criação de nova operação -->
       <div id="op-template-section">
         <label class="form-label">Usar template</label>
         <select id="op-template-select" class="select-field">
-          <option value="">— Sem template (operação manual) —</option>
+          <option value="">— Sem template —</option>
         </select>
         <div class="form-divider">ou preencha manualmente:</div>
       </div>
 
-      <label class="form-label">Nome da operação / evento *</label>
-      <input id="op-nome" type="text" class="input-field" placeholder="Ex: CICLOFAIXA DE LAZER" autocomplete="off">
+      <!-- ── CONTEXTO DA OPERAÇÃO ────────────────────────────── -->
+      <!-- Visível ao criar nova operação; oculto ao adicionar   -->
+      <!-- QRU em operação já existente                          -->
+      <div id="op-contexto-section">
+        <!-- a. Bairro com autocomplete dos 106 bairros oficiais -->
+        <label class="form-label">Bairro / Área *</label>
+        <div class="combo-wrap">
+          <input id="op-bairro-input" type="text" class="input-field"
+            placeholder="Digite o bairro..." autocomplete="off">
+          <div id="op-bairro-list" class="combo-list"></div>
+        </div>
 
-      <label class="form-label">Tipo de missão * <span class="text-muted" style="font-weight:400;text-transform:none;letter-spacing:0">(categoria do Relatório Mensal)</span></label>
-      <select id="op-tipo-missao" class="select-field">
-        <option value="">— Selecionar —</option>
-      </select>
+        <!-- b. Tipo de missão -->
+        <label class="form-label">Tipo de missão *
+          <span class="form-label-hint">(categoria do Relatório Mensal)</span>
+        </label>
+        <select id="op-tipo-missao" class="select-field">
+          <option value="">— Selecionar —</option>
+        </select>
 
-      <label class="form-label">Bairro / Área</label>
-      <input id="op-bairro" type="text" class="input-field" placeholder="Ex: ALDEOTA">
+        <!-- c. Horário — opcional, padrão em branco -->
+        <label class="form-label">Horário de início
+          <span class="form-label-hint">opcional</span>
+        </label>
+        <input id="op-horario" type="time" class="input-field">
 
-      <label class="form-label">Horário de início</label>
-      <input id="op-horario" type="time" class="input-field">
+        <!-- Nome gerado automaticamente — editável se necessário -->
+        <div id="op-nome-section">
+          <label class="form-label">Nome da operação
+            <span class="form-label-hint">gerado automaticamente</span>
+          </label>
+          <input id="op-nome" type="text" class="input-field"
+            placeholder="Preenchido ao selecionar tipo + bairro..." autocomplete="off">
+        </div>
+      </div>
+
+      <!-- ── QRU / POSTO ──────────────────────────────────────── -->
+      <div id="op-qru-section">
+        <div class="form-secao-titulo">QRU</div>
+
+        <!-- d. Endereço / Local -->
+        <input id="posto-operacao-id" type="hidden">
+        <label class="form-label">Endereço / Local</label>
+        <input id="posto-local" type="text" class="input-field"
+          placeholder="Ex: AV DES MOREIRA × AV DOM LUÍS" autocomplete="off">
+
+        <!-- Bairro herdado (oculto, enviado automaticamente) -->
+        <input id="posto-bairro" type="hidden">
+        <input id="posto-horario" type="hidden">
+
+        <!-- Tipo de ação -->
+        <label class="form-label">Tipo de ação</label>
+        <select id="posto-tipo-acao" class="select-field"></select>
+
+        <!-- e. Observação -->
+        <label class="form-label">Observação
+          <span class="form-label-hint">opcional</span>
+        </label>
+        <input id="posto-obs" type="text" class="input-field" placeholder="">
+
+        <!-- f. Orientador / Equipe — humanizado, desobrigado mas sinalizado -->
+        <label class="form-label">Orientador / Equipe
+          <span id="lbl-orientador-hint" class="badge badge-warning" style="display:none">⚠ não designado</span>
+        </label>
+        <div class="combo-wrap">
+          <input id="posto-recurso-input" type="text" class="input-field"
+            placeholder="Opcional — designar depois é possível"
+            autocomplete="off"
+            oninput="NIT_EFETIVO.Modals._onOrientadorInput()">
+          <div id="posto-recurso-list" class="combo-list"></div>
+        </div>
+
+        <label class="form-label">Pessoas neste QRU
+          <span class="form-label-hint">padrão 1</span>
+        </label>
+        <input id="posto-qru-pessoas" type="number" class="input-field" value="1" min="1" max="20">
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="NIT_EFETIVO.Modals.fecharAddOperacao()">CANCELAR</button>
-      <button class="btn btn-primary" onclick="NIT_EFETIVO.Modals.confirmarAddOperacao()">ADICIONAR</button>
+      <button class="btn btn-primary" id="btn-confirmar-add-op" onclick="NIT_EFETIVO.Modals.confirmarAddOperacao()">ADICIONAR QRU</button>
     </div>
   </div>
 </div>
@@ -350,7 +419,9 @@
       </div>
       <div class="form-row">
         <div class="grid-full">
-          <label class="form-label">Tipo de missão * <span class="text-muted" style="font-weight:400;text-transform:none;letter-spacing:0">(categoria do Relatório Mensal)</span></label>
+          <label class="form-label">Tipo de missão *
+            <span class="form-label-hint">(categoria do Relatório Mensal)</span>
+          </label>
           <select id="tmpl-tipo-missao" class="select-field">
             <option value="">— Selecionar —</option>
           </select>
@@ -366,7 +437,6 @@
           <input id="tmpl-horario" type="time" class="input-field">
         </div>
       </div>
-
       <div class="tmpl-postos-header">
         <label class="form-label">POSTOS PADRÃO</label>
         <button class="btn btn-secondary btn-sm"
@@ -381,52 +451,7 @@
   </div>
 </div>
 
-<!-- Modal: Adicionar QRU/Posto ──────────────────────────────── -->
-<div id="modal-add-posto" class="modal-overlay" onclick="NIT_EFETIVO.Modals._onOverlayClick(event,'modal-add-posto')">
-  <div class="modal-card modal-card-lg">
-    <div class="modal-header">
-      <h3>ADICIONAR QRU / POSTO</h3>
-      <button class="modal-close" onclick="NIT_EFETIVO.Modals.fecharAddPosto()">×</button>
-    </div>
-    <div class="modal-body">
-      <input id="posto-operacao-id" type="hidden">
-
-      <label class="form-label">Endereço / Local *</label>
-      <input id="posto-local" type="text" class="input-field" placeholder="Ex: AV DES MOREIRA X AV DOM LUÍS" autocomplete="off">
-
-      <div class="form-row">
-        <div>
-          <label class="form-label">Bairro</label>
-          <input id="posto-bairro" type="text" class="input-field">
-        </div>
-        <div>
-          <label class="form-label">Horário</label>
-          <input id="posto-horario" type="time" class="input-field">
-        </div>
-      </div>
-
-      <label class="form-label">Tipo de ação</label>
-      <select id="posto-tipo-acao" class="select-field"></select>
-
-      <label class="form-label">Agente / Viatura *</label>
-      <div class="combo-wrap">
-        <input id="posto-recurso-input" type="text" class="input-field"
-          placeholder="Digite o nome do agente ou da equipe..." autocomplete="off">
-        <div id="posto-recurso-list" class="combo-list"></div>
-      </div>
-
-      <label class="form-label">Pessoas neste QRU</label>
-      <input id="posto-qru-pessoas" type="number" class="input-field" value="1" min="1" max="20">
-
-      <label class="form-label">Observação</label>
-      <input id="posto-obs" type="text" class="input-field" placeholder="Opcional">
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="NIT_EFETIVO.Modals.fecharAddPosto()">CANCELAR</button>
-      <button class="btn btn-primary" onclick="NIT_EFETIVO.Modals.confirmarAddPosto()">ADICIONAR QRU</button>
-    </div>
-  </div>
-</div>
+<!-- modal-add-posto removido — fluxo unificado no modal-add-operacao -->
 
 <!-- Modal: Cadastrar Recurso ────────────────────────────────── -->
 <div id="modal-cadastro-recurso" class="modal-overlay" onclick="NIT_EFETIVO.Modals._onOverlayClick(event,'modal-cadastro-recurso')">
@@ -499,14 +524,26 @@
       <label class="form-label">Nome da equipe *</label>
       <input id="vt-nome" type="text" class="input-field" placeholder="Ex: EQUIPE NONATO" autocomplete="off">
 
-      <label class="form-label">Líder / Condutor *</label>
+      <label class="form-label">Tipo</label>
+      <div class="vt-tipo-toggle">
+        <label class="vt-tipo-option">
+          <input type="radio" name="vt-tipo" value="equipe" checked>
+          <span>👥 Equipe a pé</span>
+        </label>
+        <label class="vt-tipo-option">
+          <input type="radio" name="vt-tipo" value="viatura">
+          <span>🚓 Equipe com viatura</span>
+        </label>
+      </div>
+
+      <label class="form-label">Líder / Responsável *</label>
       <div class="combo-wrap">
         <input id="vt-lider-input" type="text" class="input-field"
           placeholder="Digite o nome do líder..." autocomplete="off">
         <div id="vt-lider-list" class="combo-list"></div>
       </div>
 
-      <label class="form-label">Tripulantes / Membros</label>
+      <label class="form-label">Integrantes</label>
       <input id="vt-membros-filtro" type="text" class="input-field input-spaced"
         placeholder="Filtrar por nome..." autocomplete="off"
         oninput="NIT_EFETIVO.Modals._filtrarMembros(this.value)">
